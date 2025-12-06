@@ -74,7 +74,11 @@ const mapKeysToDB = (obj: any): any => {
             if (EXCLUDED_KEYS.includes(key)) return result;
 
             const newKey = toSnake(key);
-            result[newKey] = obj[key]; // No recursive for values to avoid breaking JSONB structures unless needed
+            const value = obj[key];
+
+            // Fix 22007: Empty strings from UI inputs must be null for Date/Number DB columns
+            result[newKey] = value === "" ? null : value;
+
             return result;
         }, {} as any);
     }
