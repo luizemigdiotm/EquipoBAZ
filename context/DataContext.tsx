@@ -295,26 +295,52 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
         fetchData(); // Refresh
     };
 
-    // GENERIC HELPERS
+    // GENERIC HELPERS (Manual Fetch Bypass)
+    const authenticatedFetch = async (endpoint: string, method: string, body?: any) => {
+        const storedSession = localStorage.getItem('BAZ_SESSION');
+        if (!storedSession) throw new Error('No hay sesión activa');
+
+        const { access_token } = JSON.parse(storedSession);
+
+        const headers: any = {
+            'apikey': supabaseKey,
+            'Authorization': `Bearer ${access_token}`,
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal' // Optimisation: don't return the full object, we refresh anyway
+        };
+
+        const res = await fetch(`${supabaseUrl}/rest/v1/${endpoint}`, {
+            method,
+            headers,
+            body: body ? JSON.stringify(body) : undefined
+        });
+
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Error ${res.status}: ${errText}`);
+        }
+        return res;
+    };
+
     const genericAdd = async (table: string, item: any, logAction: string) => {
         const dbItem = mapKeysToDB(item);
-        const { error } = await supabase.from(table).insert(dbItem);
-        if (error) throw error;
+        // Manual POST
+        await authenticatedFetch(table, 'POST', dbItem);
         addAuditLog(`Agregar ${logAction}`, `ID: ${item.id}`);
         fetchData();
     };
 
     const genericUpdate = async (table: string, item: any, logAction: string) => {
         const dbItem = mapKeysToDB(item);
-        const { error } = await supabase.from(table).update(dbItem).eq('id', item.id);
-        if (error) throw error;
+        // Manual PATCH
+        await authenticatedFetch(`${table}?id=eq.${item.id}`, 'PATCH', dbItem);
         addAuditLog(`Editar ${logAction}`, `ID: ${item.id}`);
         fetchData();
     };
 
     const genericDelete = async (table: string, id: string, logAction: string) => {
-        const { error } = await supabase.from(table).delete().eq('id', id);
-        if (error) throw error;
+        // Manual DELETE
+        await authenticatedFetch(`${table}?id=eq.${id}`, 'DELETE');
         addAuditLog(`Eliminar ${logAction}`, `ID: ${id}`);
         fetchData();
     };
