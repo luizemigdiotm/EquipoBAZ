@@ -121,21 +121,8 @@ export const Login = () => {
               Solicitar acceso por WhatsApp
             </a >
           </div >
-        </form >
-        ¿Problemas de conexión ? Diagnosticar aquí
-      </button >
-
-      <a
-        href="https://wa.me/524662606262?text=quiero%20acceso%20al%20sistema%20equipo%20BAZ"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="inline-flex items-center justify-center px-4 py-2 bg-green-50 text-green-700 rounded-full text-xs font-bold hover:bg-green-100 transition-colors border border-green-200"
-      >
-        <MessageCircle size={16} className="mr-2" />
-        Solicitar acceso por WhatsApp
-      </a>
-    </div >
-      </div >
-    </div >
+        </form>
+      </div>
+    </div>
   );
 };
