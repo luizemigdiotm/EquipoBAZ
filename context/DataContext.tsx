@@ -66,8 +66,13 @@ const mapKeysToApp = (obj: any): any => {
 };
 
 const mapKeysToDB = (obj: any): any => {
+    // Keys to always exclude from DB operations
+    const EXCLUDED_KEYS = ['count', 'children'];
+
     if (obj !== null && obj.constructor === Object) {
         return Object.keys(obj).reduce((result, key) => {
+            if (EXCLUDED_KEYS.includes(key)) return result;
+
             const newKey = toSnake(key);
             result[newKey] = obj[key]; // No recursive for values to avoid breaking JSONB structures unless needed
             return result;
