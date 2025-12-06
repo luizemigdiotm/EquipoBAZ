@@ -89,34 +89,60 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
     const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
 
     // --- 1. AUTH & DATA LOADING ---
+    // --- 1. AUTH & DATA LOADING ---
     const fetchData = async () => {
-        // Fetch all tables
-        const { data: tAdvisors } = await supabase.from('advisors').select('*');
-        if (tAdvisors) setAdvisors(mapKeysToApp(tAdvisors));
+        try {
+            console.log('[FetchData] Starting manual fetch...');
 
-        const { data: tIndicators } = await supabase.from('indicators').select('*');
-        if (tIndicators) setIndicators(mapKeysToApp(tIndicators));
+            // Helper to safe fetch and map
+            const safeFetch = async (endpoint: string) => {
+                try {
+                    const res = await authenticatedFetch(endpoint, 'GET');
+                    const json = await res.json();
+                    return mapKeysToApp(json) || [];
+                } catch (e) {
+                    console.warn(`[FetchData] Error fetching ${endpoint}`, e);
+                    return [];
+                }
+            };
 
-        const { data: tBudgets } = await supabase.from('budgets').select('*');
-        if (tBudgets) setBudgets(mapKeysToApp(tBudgets));
+            const [
+                tAdvisors,
+                tIndicators,
+                tBudgets,
+                tRecords,
+                tRRHH,
+                tSup,
+                tCoach,
+                tLogs,
+                tProfiles
+            ] = await Promise.all([
+                safeFetch('advisors'),
+                safeFetch('indicators'),
+                safeFetch('budgets'),
+                safeFetch('records'),
+                safeFetch('rrhh_events'),
+                safeFetch('supervision_logs'),
+                safeFetch('coaching_sessions'),
+                safeFetch('audit_logs?order=timestamp.desc'),
+                safeFetch('profiles')
+            ]);
 
-        const { data: tRecords } = await supabase.from('records').select('*');
-        if (tRecords) setRecords(mapKeysToApp(tRecords));
+            setAdvisors(tAdvisors);
+            setIndicators(tIndicators);
+            setBudgets(tBudgets);
+            setRecords(tRecords);
+            setRRHHEvents(tRRHH);
+            setSupervisionLogs(tSup);
+            setCoachingSessions(tCoach);
+            setAuditLogs(tLogs);
+            setAllUsers(tProfiles);
 
-        const { data: tRRHH } = await supabase.from('rrhh_events').select('*');
-        if (tRRHH) setRRHHEvents(mapKeysToApp(tRRHH));
+            console.log('[FetchData] Completed successfully');
 
-        const { data: tSup } = await supabase.from('supervision_logs').select('*');
-        if (tSup) setSupervisionLogs(mapKeysToApp(tSup));
-
-        const { data: tCoach } = await supabase.from('coaching_sessions').select('*');
-        if (tCoach) setCoachingSessions(mapKeysToApp(tCoach));
-
-        const { data: tLogs } = await supabase.from('audit_logs').select('*').order('timestamp', { ascending: false });
-        if (tLogs) setAuditLogs(mapKeysToApp(tLogs));
-
-        const { data: tProfiles } = await supabase.from('profiles').select('*');
-        if (tProfiles) setAllUsers(mapKeysToApp(tProfiles));
+        } catch (globalErr) {
+            console.error('[FetchData] Critical error', globalErr);
+        }
     };
 
     useEffect(() => {
