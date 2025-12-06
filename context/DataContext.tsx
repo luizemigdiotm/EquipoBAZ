@@ -123,46 +123,48 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
     // Auth Listener
     const { data: authListener } = supabase.auth.onAuthStateChange(async (event, session) => {
         if (session?.user) {
-            const { data: profile } = await supabase.from('profiles').select('*').eq('id', session.user.id).single();
-            if (profile) {
-                setUser(mapKeysToApp({ ...profile, id: session.user.id }));
-            } else {
-                // Fallback if profile trigger hasn't run yet or failed
-                setUser({ id: session.user.id, username: session.user.email || 'User', role: 'LECTOR' });
+            try {
+                // Try to get extended profile
+                const { data: profile, error } = await supabase
+                    .from('profiles')
+                    .select('*')
+                    .eq('id', session.user.id)
+                    .single();
+                
+                if (error || !profile) {
+                    // Fallback if profile table not set up or RLS error
+                    console.warn('Could not fetch profile, using fallback', error);
+                    setUser({
+                        id: session.user.id,
+                        username: session.user.email?.split('@')[0] || 'User',
+                        role: 'LECTOR' // Default safe role
+                    });
+                } else {
+                    setUser(mapKeysToApp(profile));
+                }
+                
+                // Load data
+                fetchData();
+            } catch (e) {
+                console.error("Auth Error:", e);
+                // Last resort fallback to allow login
+                setUser({
+                    id: session.user.id,
+                    username: session.user.email?.split('@')[0] || 'User',
+                    role: 'LECTOR'
+                });
             }
         } else {
             setUser(null);
+            setAdvisors([]);
+            setRecords([]);
         }
     });
 
-    // Initial Fetch
-    fetchData();
-
-    // Realtime Subscription (Listen to ALL changes on public schema)
-    const channel = supabase.channel('db_changes')
-        .on('postgres_changes', { event: '*', schema: 'public' }, () => {
-            // Simple strategy: Refetch all on any change. 
-            // For production with large data, specific optimistic updates are better.
-            fetchData();
-        })
-        .subscribe();
-
     return () => {
         authListener.subscription.unsubscribe();
-        supabase.removeChannel(channel);
     };
   }, []);
-
-  const logAction = async (action: string, details: string) => {
-    if (!user) return;
-    await supabase.from('audit_logs').insert(mapKeysToDB({
-        userId: user.id,
-        username: user.username,
-        action,
-        details,
-        timestamp: new Date().toISOString()
-    }));
-  };
 
   const login = async (email: string, pass: string) => {
       const { error } = await supabase.auth.signInWithPassword({ email, password: pass });
@@ -171,28 +173,54 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
 
   const logout = async () => {
       await supabase.auth.signOut();
+      setUser(null);
   };
 
-  // USERS (PROFILES) - Managed mostly by Auth + Triggers, but Admin can edit roles
-  const addUser = async (u: User) => {
-      // NOTE: Creating users via Client SDK only works if Allow Email Signups is on. 
-      // Admin creation usually requires Service Role key on backend.
-      // For this app, we assume users sign up or are created via Supabase Dashboard,
-      // and here we just manage the profile data.
-      alert('Por favor cree el usuario desde el panel de Supabase Authentication.');
+  // --- CRUD WRAPPERS ---
+  const addAuditLog = async (action: string, details: string) => {
+      if (!user) return;
+      const newLog = {
+          user_id: user.id,
+          username: user.username,
+          action,
+          details,
+          timestamp: new Date().toISOString()
+      };
+      await supabase.from('audit_logs').insert(newLog);
+      fetchData(); // Refresh
   };
 
-  const updateUser = async (u: User) => {
-      const dbData = mapKeysToDB(u);
-      await supabase.from('profiles').update(dbData).eq('id', u.id);
-      logAction('Actualizar Usuario', `Usuario ${u.username} actualizado`);
+  // GENERIC HELPERS
+  const genericAdd = async (table: string, item: any, logAction: string) => {
+      const dbItem = mapKeysToDB(item);
+      const { error } = await supabase.from(table).insert(dbItem);
+      if (error) throw error;
+      addAuditLog(`Agregar ${logAction}`, `ID: ${item.id}`);
+      fetchData();
   };
 
-  const deleteUser = async (id: string) => {
-      // Cannot delete Auth user from client easily without Edge Function
-      alert('Para eliminar el acceso, borre el usuario desde el panel de Supabase Authentication.');
+  const genericUpdate = async (table: string, item: any, logAction: string) => {
+      const dbItem = mapKeysToDB(item);
+      const { error } = await supabase.from(table).update(dbItem).eq('id', item.id);
+      if (error) throw error;
+      addAuditLog(`Editar ${logAction}`, `ID: ${item.id}`);
+      fetchData();
   };
 
+  const genericDelete = async (table: string, id: string, logAction: string) => {
+      const { error } = await supabase.from(table).delete().eq('id', id);
+      if (error) throw error;
+      addAuditLog(`Eliminar ${logAction}`, `ID: ${id}`);
+      fetchData();
+  };
+
+  // --- EXPORTED FUNCTIONS ---
+  
+  // Users (Managed via Profiles table mostly, Auth is handled by Supabase)
+  const addUser = async (u: User) => genericAdd('profiles', u, 'Usuario');
+  const updateUser = async (u: User) => genericUpdate('profiles', u, 'Usuario');
+  const deleteUser = async (id: string) => genericDelete('profiles', id, 'Usuario');
+  
   const updateProfile = async (data: { username?: string; password?: string; photoUrl?: string }) => {
       if (!user) return;
       
@@ -206,129 +234,93 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
       if (data.photoUrl) updates.photo_url = data.photoUrl;
 
       if (Object.keys(updates).length > 0) {
-          await supabase.from('profiles').update(updates).eq('id', user.id);
-          // Update local state immediately
-          setUser(prev => prev ? ({ ...prev, ...mapKeysToApp(updates) }) : null);
+          const { error } = await supabase.from('profiles').update(updates).eq('id', user.id);
+          if (error) throw error;
+          setUser(prev => prev ? { ...prev, ...mapKeysToApp(updates) } : null);
       }
-      logAction('Actualizar Perfil', `Usuario actualizó sus datos`);
   };
 
-  // GENERIC CRUD HELPERS
-  const addItem = async (table: string, item: any, actionName: string) => {
-      const { id, ...rest } = item; // Let Supabase gen ID or use provided if necessary
-      const dbItem = mapKeysToDB(rest);
-      // If item has ID generated by frontend (crypto.randomUUID), use it
-      if (id) dbItem.id = id;
-      
-      const { error } = await supabase.from(table).insert(dbItem);
-      if (error) { console.error(error); throw error; }
-      logAction(`Crear ${actionName}`, `Nuevo registro en ${table}`);
-  };
+  // Advisors
+  const addAdvisor = async (adv: Advisor) => genericAdd('advisors', adv, 'Asesor');
+  const updateAdvisor = async (adv: Advisor) => genericUpdate('advisors', adv, 'Asesor');
+  const deleteAdvisor = async (id: string) => genericDelete('advisors', id, 'Asesor');
 
-  const updateItem = async (table: string, item: any, actionName: string) => {
-      const { id, ...rest } = item;
-      const dbItem = mapKeysToDB(rest);
-      const { error } = await supabase.from(table).update(dbItem).eq('id', id);
+  // Indicators
+  const addIndicator = async (ind: Indicator) => genericAdd('indicators', ind, 'Indicador');
+  const updateIndicator = async (ind: Indicator) => genericUpdate('indicators', ind, 'Indicador');
+  const deleteIndicator = async (id: string) => genericDelete('indicators', id, 'Indicador');
+
+  // Budgets (Batch Save)
+  const saveBudget = async (configs: BudgetConfig[], year: number, week: number) => {
+      // Upsert many
+      const dbConfigs = configs.map(c => mapKeysToDB(c));
+      const { error } = await supabase.from('budgets').upsert(dbConfigs);
       if (error) throw error;
-      logAction(`Actualizar ${actionName}`, `ID ${id} actualizado`);
+      addAuditLog('Actualizar Presupuestos', `Año ${year} Sem ${week}`);
+      fetchData();
   };
 
-  const deleteItem = async (table: string, id: string, actionName: string) => {
-      const { error } = await supabase.from(table).delete().eq('id', id);
-      if (error) throw error;
-      logAction(`Eliminar ${actionName}`, `ID ${id} eliminado`);
-  };
-
-  // IMPLEMENTATIONS
-  const addAdvisor = (a: Advisor) => addItem('advisors', a, 'Colaborador');
-  const updateAdvisor = (a: Advisor) => updateItem('advisors', a, 'Colaborador');
-  const deleteAdvisor = (id: string) => deleteItem('advisors', id, 'Colaborador');
-
-  const addIndicator = (i: Indicator) => addItem('indicators', i, 'Indicador');
-  const updateIndicator = (i: Indicator) => updateItem('indicators', i, 'Indicador');
-  const deleteIndicator = (id: string) => deleteItem('indicators', id, 'Indicador');
-
-  // BUDGETS (Batch Logic)
-  const saveBudget = async (newBudgets: BudgetConfig[], year: number, week: number) => {
-      // 1. Delete existing for this scope to avoid duplicates
-      // Supabase doesn't have batch delete by complex filter easily in one go, 
-      // but we can query IDs then delete.
-      
-      // Strategy: Filter locally what needs to be deleted? 
-      // Better: Delete where year/week matches for the indicators involved?
-      // For simplicity in migration: We insert/upsert.
-      // But user logic expects cleanup.
-      
-      const toInsert = newBudgets.map(b => mapKeysToDB(b));
-      
-      // We will perform upsert based on ID if provided
-      const { error } = await supabase.from('budgets').upsert(toInsert);
-      if (error) throw error;
-      
-      logAction('Presupuesto', `Presupuestos guardados Sem ${week} ${year}`);
-  };
-
-  // RECORDS
+  // Records
   const saveRecord = async (rec: RecordData, cleanupMode?: 'DELETE_WEEKLY' | 'DELETE_DAILY') => {
-      const dbRec = mapKeysToDB(rec);
-      
-      if (cleanupMode) {
-          // Find records to delete
-          const freqToDelete = cleanupMode === 'DELETE_WEEKLY' ? 'WEEKLY' : 'DAILY';
+      // Handle Cleanup
+      if (cleanupMode === 'DELETE_WEEKLY') {
+          // Delete any weekly record for this period/target
           await supabase.from('records').delete()
-            .eq('year', rec.year)
-            .eq('week', rec.week)
-            .eq('frequency', freqToDelete)
-            .eq('advisor_id', rec.advisorId || '') 
-            .eq('type', rec.type === 'Individual' ? 'INDIVIDUAL' : 'BRANCH'); // Enum mapping check
-            // Note: ReportType enum values are 'Individual'/'Sucursal'. DB might expect them.
-            // Check mapKeysToDB handling of Enums? It passes strings.
+            .eq('year', rec.year).eq('week', rec.week)
+            .eq('type', rec.type).eq('frequency', 'WEEKLY')
+            .eq(rec.type === 'Individual' ? 'advisor_id' : 'id', rec.type === 'Individual' ? rec.advisorId : 'placeholder'); // Simplified check, usually by advisorId or just week/year/type
+            // Better logic:
+            let query = supabase.from('records').delete().eq('year', rec.year).eq('week', rec.week).eq('type', rec.type).eq('frequency', 'WEEKLY');
+            if (rec.advisorId) query = query.eq('advisor_id', rec.advisorId);
+            await query;
+      } else if (cleanupMode === 'DELETE_DAILY') {
+           let query = supabase.from('records').delete().eq('year', rec.year).eq('week', rec.week).eq('type', rec.type).eq('frequency', 'DAILY');
+           if (rec.advisorId) query = query.eq('advisor_id', rec.advisorId);
+           await query;
       }
 
-      // Check specific collision to overwrite
-      if (rec.id) {
-          const { error } = await supabase.from('records').upsert(dbRec);
-          if (error) throw error;
-      } else {
-          const { error } = await supabase.from('records').insert(dbRec);
-          if (error) throw error;
-      }
-      logAction('Registro', `Registro guardado ${rec.type}`);
+      // Clean undefined fields
+      const cleanRec = { ...rec };
+      if (cleanRec.dayOfWeek === undefined) delete (cleanRec as any).dayOfWeek;
+      if (cleanRec.advisorId === undefined) delete (cleanRec as any).advisorId;
+
+      await genericAdd('records', cleanRec, 'Registro');
   };
-  const deleteRecord = (id: string) => deleteItem('records', id, 'Registro');
+  
+  const deleteRecord = async (id: string) => genericDelete('records', id, 'Registro');
 
   // RRHH
-  const addRRHHEvent = (e: RRHHEvent) => addItem('rrhh_events', e, 'RRHH');
-  const updateRRHHEvent = (e: RRHHEvent) => updateItem('rrhh_events', e, 'RRHH');
-  const deleteRRHHEvent = (id: string) => deleteItem('rrhh_events', id, 'RRHH');
+  const addRRHHEvent = async (evt: RRHHEvent) => genericAdd('rrhh_events', evt, 'Evento RRHH');
+  const updateRRHHEvent = async (evt: RRHHEvent) => genericUpdate('rrhh_events', evt, 'Evento RRHH');
+  const deleteRRHHEvent = async (id: string) => genericDelete('rrhh_events', id, 'Evento RRHH');
 
-  // SUPERVISION
-  const addSupervisionLog = (l: SupervisionLog) => addItem('supervision_logs', l, 'Bitácora');
-  const deleteSupervisionLog = (id: string) => deleteItem('supervision_logs', id, 'Bitácora');
+  // Supervision
+  const addSupervisionLog = async (log: SupervisionLog) => genericAdd('supervision_logs', log, 'Bitácora');
+  const deleteSupervisionLog = async (id: string) => genericDelete('supervision_logs', id, 'Bitácora');
 
-  // COACHING
-  const addCoachingSession = (c: CoachingSession) => addItem('coaching_sessions', c, 'Coaching');
-  const deleteCoachingSession = (id: string) => deleteItem('coaching_sessions', id, 'Coaching');
+  // Coaching
+  const addCoachingSession = async (s: CoachingSession) => genericAdd('coaching_sessions', s, 'Coaching');
+  const deleteCoachingSession = async (id: string) => genericDelete('coaching_sessions', id, 'Coaching');
 
-  return (
-    <DataContext.Provider value={{
-      user, allUsers, login, logout, addUser, updateUser, deleteUser, updateProfile,
-      advisors, addAdvisor, updateAdvisor, deleteAdvisor,
-      indicators, addIndicator, updateIndicator, deleteIndicator,
-      budgets, saveBudget,
-      records, saveRecord, deleteRecord,
-      rrhhEvents, addRRHHEvent, updateRRHHEvent, deleteRRHHEvent,
-      supervisionLogs, addSupervisionLog, deleteSupervisionLog,
-      coachingSessions, addCoachingSession, deleteCoachingSession,
-      auditLogs
-    }}>
-      {children}
-    </DataContext.Provider>
-  );
+  const value = {
+    user, allUsers, login, logout, addUser, updateUser, deleteUser, updateProfile,
+    advisors, addAdvisor, updateAdvisor, deleteAdvisor,
+    indicators, addIndicator, updateIndicator, deleteIndicator,
+    budgets, saveBudget,
+    records, saveRecord, deleteRecord,
+    rrhhEvents, addRRHHEvent, updateRRHHEvent, deleteRRHHEvent,
+    supervisionLogs, addSupervisionLog, deleteSupervisionLog,
+    coachingSessions, addCoachingSession, deleteCoachingSession,
+    auditLogs
+  };
+
+  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 };
 
 export const useData = () => {
   const context = useContext(DataContext);
-  if (!context) throw new Error('useData must be used within DataProvider');
+  if (context === undefined) {
+    throw new Error('useData must be used within a DataProvider');
+  }
   return context;
 };
