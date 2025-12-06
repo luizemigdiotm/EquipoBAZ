@@ -418,31 +418,54 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
 
     // Budgets (Batch Save)
     const saveBudget = async (configs: BudgetConfig[], year: number, week: number) => {
-        // Upsert many
+        // Upsert many logic manual
         const dbConfigs = configs.map(c => mapKeysToDB(c));
-        const { error } = await supabase.from('budgets').upsert(dbConfigs);
-        if (error) throw error;
+
+        // Manual UPSERT via Fetch
+        const storedSession = localStorage.getItem('BAZ_SESSION');
+        if (!storedSession) throw new Error('No hay sesión activa');
+        const { access_token } = JSON.parse(storedSession);
+
+        const res = await fetch(`${supabaseUrl}/rest/v1/budgets`, {
+            method: 'POST',
+            headers: {
+                'apikey': supabaseKey,
+                'Authorization': `Bearer ${access_token}`,
+                'Content-Type': 'application/json',
+                'Prefer': 'resolution=merge-duplicates' // Critical for Upsert behavior
+            },
+            body: JSON.stringify(dbConfigs)
+        });
+
+        if (!res.ok) {
+            const errText = await res.text();
+            throw new Error(`Error saving budgets: ${errText}`);
+        }
+
         addAuditLog('Actualizar Presupuestos', `Año ${year} Sem ${week}`);
         fetchData();
     };
 
     // Records
     const saveRecord = async (rec: RecordData, cleanupMode?: 'DELETE_WEEKLY' | 'DELETE_DAILY') => {
-        // Handle Cleanup
-        if (cleanupMode === 'DELETE_WEEKLY') {
-            // Delete any weekly record for this period/target
-            await supabase.from('records').delete()
-                .eq('year', rec.year).eq('week', rec.week)
-                .eq('type', rec.type).eq('frequency', 'WEEKLY')
-                .eq(rec.type === 'Individual' ? 'advisor_id' : 'id', rec.type === 'Individual' ? rec.advisorId : 'placeholder'); // Simplified check, usually by advisorId or just week/year/type
-            // Better logic:
-            let query = supabase.from('records').delete().eq('year', rec.year).eq('week', rec.week).eq('type', rec.type).eq('frequency', 'WEEKLY');
-            if (rec.advisorId) query = query.eq('advisor_id', rec.advisorId);
-            await query;
-        } else if (cleanupMode === 'DELETE_DAILY') {
-            let query = supabase.from('records').delete().eq('year', rec.year).eq('week', rec.week).eq('type', rec.type).eq('frequency', 'DAILY');
-            if (rec.advisorId) query = query.eq('advisor_id', rec.advisorId);
-            await query;
+        // Handle Cleanup Manual
+        if (cleanupMode) {
+            const params = new URLSearchParams();
+            params.append('year', `eq.${rec.year}`);
+            params.append('week', `eq.${rec.week}`);
+            params.append('type', `eq.${rec.type}`);
+
+            if (cleanupMode === 'DELETE_WEEKLY') {
+                params.append('frequency', 'eq.WEEKLY');
+            } else {
+                params.append('frequency', 'eq.DAILY');
+            }
+
+            if (rec.advisorId) {
+                params.append('advisor_id', `eq.${rec.advisorId}`);
+            }
+
+            await authenticatedFetch(`records?${params.toString()}`, 'DELETE');
         }
 
         // Clean undefined fields
@@ -450,6 +473,7 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
         if (cleanRec.dayOfWeek === undefined) delete (cleanRec as any).dayOfWeek;
         if (cleanRec.advisorId === undefined) delete (cleanRec as any).advisorId;
 
+        // Reuse Manual Add
         await genericAdd('records', cleanRec, 'Registro');
     };
 
