@@ -483,7 +483,7 @@ const IncentivesTab = () => {
                             {leader.photoUrl ? <img src={leader.photoUrl} className="w-full h-full object-cover"/> : <div className="w-full h-full flex items-center justify-center text-gray-300"><Briefcase/></div>}
                         </div>
                         <h1 className="text-4xl font-black text-yellow-300 mb-2">{leader.name}</h1>
-                        <p className="text-xl font-medium">Resultado: {result.score.toLocaleString()}</p>
+                        <p className="text-xl font-medium">Resultado: {result?.score.toLocaleString()}</p>
                     </div>
                 ) : (
                     <div className="py-8 text-white/50 italic">Esperando datos de la semana...</div>
