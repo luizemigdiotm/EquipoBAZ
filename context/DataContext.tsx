@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { Advisor, Indicator, BudgetConfig, RecordData, User, AuditLogEntry, RRHHEvent, SupervisionLog, CoachingSession } from '../types';
+import { Advisor, Indicator, BudgetConfig, RecordData, User, AuditLogEntry, RRHHEvent, SupervisionLog, CoachingSession, BranchConfig, ScheduleActivity, ScheduleAssignment, BranchScheduleConfig, FenixCompliance } from '../types';
 import { supabase, supabaseUrl, supabaseKey } from '../src/supabase';
 
 interface DataContextType {
@@ -36,13 +36,33 @@ interface DataContextType {
 
     supervisionLogs: SupervisionLog[];
     addSupervisionLog: (log: SupervisionLog) => Promise<void>;
+    updateSupervisionLog: (log: SupervisionLog) => Promise<void>;
     deleteSupervisionLog: (id: string) => Promise<void>;
 
     coachingSessions: CoachingSession[];
     addCoachingSession: (session: CoachingSession) => Promise<void>;
     deleteCoachingSession: (id: string) => Promise<void>;
 
+    branchConfig: BranchConfig | null;
+    updateBranchConfig: (config: BranchConfig) => Promise<void>;
+
     auditLogs: AuditLogEntry[];
+
+    // --- SCHEDULE MANAGEMENT ---
+    scheduleActivities: ScheduleActivity[];
+    addScheduleActivity: (act: ScheduleActivity) => Promise<void>;
+    updateScheduleActivity: (act: ScheduleActivity) => Promise<void>;
+    deleteScheduleActivity: (id: string) => Promise<void>;
+
+    scheduleAssignments: ScheduleAssignment[];
+    saveScheduleAssignments: (assigns: ScheduleAssignment[]) => Promise<void>;
+    deleteScheduleAssignment: (id: string) => Promise<void>;
+
+    branchScheduleConfig: BranchScheduleConfig | null;
+    updateBranchScheduleConfig: (config: BranchScheduleConfig) => Promise<void>;
+
+    fenixCompliances: FenixCompliance[];
+    toggleFenixCompliance: (advisorId: string, date: string, timeSlot: string, isCompliant: boolean) => Promise<void>;
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
@@ -57,8 +77,14 @@ const mapKeysToApp = (obj: any): any => {
     if (obj !== null && obj.constructor === Object) {
         return Object.keys(obj).reduce((result, key) => {
             const newKey = toCamel(key);
-            // Special handling for JSON fields or known arrays if needed, but recursive covers most
-            result[newKey] = mapKeysToApp(obj[key]);
+
+            // CRITICAL FIX: Do not transform keys inside 'values' (JSONB with UUIDs).
+            // 'toCamel' strips dashes from UUIDs (e.g. 123-456 -> 123456), breaking lookups.
+            if (newKey === 'values' || newKey === 'agreements') {
+                result[newKey] = obj[key];
+            } else {
+                result[newKey] = mapKeysToApp(obj[key]);
+            }
             return result;
         }, {} as any);
     }
@@ -75,6 +101,9 @@ const mapKeysToDB = (obj: any): any => {
 
             const newKey = toSnake(key);
             const value = obj[key];
+
+            // SPECIAL CASE: Never send 'id' as null or empty. Let DB generate default.
+            if (newKey === 'id' && !value) return result;
 
             // Fix 22007: Empty strings from UI inputs must be null for Date/Number DB columns
             result[newKey] = value === "" ? null : value;
@@ -96,8 +125,14 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
     const [supervisionLogs, setSupervisionLogs] = useState<SupervisionLog[]>([]);
     const [coachingSessions, setCoachingSessions] = useState<CoachingSession[]>([]);
     const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+    const [branchConfig, setBranchConfig] = useState<BranchConfig | null>(null);
 
-    // --- 1. AUTH & DATA LOADING ---
+    // Schedule States
+    const [scheduleActivities, setScheduleActivities] = useState<ScheduleActivity[]>([]);
+    const [scheduleAssignments, setScheduleAssignments] = useState<ScheduleAssignment[]>([]);
+    const [branchScheduleConfig, setBranchScheduleConfig] = useState<BranchScheduleConfig | null>(null);
+    const [fenixCompliances, setFenixCompliances] = useState<FenixCompliance[]>([]);
+
     // --- 1. AUTH & DATA LOADING ---
     const fetchData = async () => {
         try {
@@ -124,7 +159,12 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 tSup,
                 tCoach,
                 tLogs,
-                tProfiles
+                tProfiles,
+                tBranchConfig,
+                tScheduleActivities,
+                tScheduleAssignments,
+                tBranchScheduleConfig,
+                tFenixCompliances
             ] = await Promise.all([
                 safeFetch('advisors'),
                 safeFetch('indicators'),
@@ -134,7 +174,12 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 safeFetch('supervision_logs'),
                 safeFetch('coaching_sessions'),
                 safeFetch('audit_logs?order=timestamp.desc'),
-                safeFetch('profiles')
+                safeFetch('profiles'),
+                safeFetch('branch_config'),
+                safeFetch('schedule_activities'),
+                safeFetch('schedule_assignments'),
+                safeFetch('branch_schedule_config'),
+                safeFetch('fenix_compliance')
             ]);
 
             setAdvisors(tAdvisors);
@@ -146,6 +191,23 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
             setCoachingSessions(tCoach);
             setAuditLogs(tLogs);
             setAllUsers(tProfiles);
+
+            // Branch Config (singleton)
+            if (tBranchConfig && tBranchConfig.length > 0) {
+                setBranchConfig(tBranchConfig[0]);
+            } else {
+                // Fallback attempt from LocalStorage if DB fails or is empty
+                const storedConf = localStorage.getItem('BRANCH_CONFIG_FALLBACK');
+                if (storedConf) setBranchConfig(JSON.parse(storedConf));
+            }
+
+            // Schedule Data
+            setScheduleActivities(tScheduleActivities);
+            setScheduleAssignments(tScheduleAssignments);
+            if (tBranchScheduleConfig && tBranchScheduleConfig.length > 0) {
+                setBranchScheduleConfig(tBranchScheduleConfig[0]);
+            }
+            setFenixCompliances(tFenixCompliances);
 
             console.log('[FetchData] Completed successfully');
 
@@ -211,6 +273,17 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 setUser(null);
                 setAdvisors([]);
                 setRecords([]);
+                setIndicators([]);
+                setBudgets([]);
+                setRRHHEvents([]);
+                setSupervisionLogs([]);
+                setCoachingSessions([]);
+                setAuditLogs([]);
+                setBranchConfig(null);
+                setScheduleActivities([]);
+                setScheduleAssignments([]);
+                setBranchScheduleConfig(null);
+                setFenixCompliances([]);
             }
         });
 
@@ -331,7 +404,7 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
     };
 
     // GENERIC HELPERS (Manual Fetch Bypass)
-    const authenticatedFetch = async (endpoint: string, method: string, body?: any) => {
+    const authenticatedFetch = async (endpoint: string, method: string, body?: any, customHeaders?: any) => {
         const storedSession = localStorage.getItem('BAZ_SESSION');
         if (!storedSession) throw new Error('No hay sesión activa');
 
@@ -341,7 +414,8 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
             'apikey': supabaseKey,
             'Authorization': `Bearer ${access_token}`,
             'Content-Type': 'application/json',
-            'Prefer': 'return=minimal' // Optimisation: don't return the full object, we refresh anyway
+            'Prefer': 'return=minimal', // Optimisation default
+            ...customHeaders
         };
 
         const res = await fetch(`${supabaseUrl}/rest/v1/${endpoint}`, {
@@ -378,6 +452,42 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
         await authenticatedFetch(`${table}?id=eq.${id}`, 'DELETE');
         addAuditLog(`Eliminar ${logAction}`, `ID: ${id}`);
         fetchData();
+    };
+
+    const updateBranchConfig = async (config: BranchConfig) => {
+        try {
+            const dbItem = mapKeysToDB(config);
+
+            // SINGLETON STRATEGY: "Delete Previous and Leave New" (as requested)
+            // 1. Fetch ALL existing configs
+            const res = await authenticatedFetch('branch_config?select=id', 'GET');
+            const existingItems = await res.json();
+
+            // 2. Delete ALL existing (to ensure clean slate as requested)
+            if (Array.isArray(existingItems) && existingItems.length > 0) {
+                // Iterate and delete (Supabase bulk delete by ID list is safer if filter syntax allows, 
+                // but simple loop is fine for 1-2 rows)
+                for (const item of existingItems) {
+                    await authenticatedFetch(`branch_config?id=eq.${item.id}`, 'DELETE');
+                }
+            }
+
+            // 3. Insert NEW (Clean ID)
+            // Remove ID if present to let DB generate new one (or use provided if valid UUID)
+            delete dbItem.id;
+
+            await authenticatedFetch('branch_config', 'POST', dbItem);
+
+            setBranchConfig(config);
+            addAuditLog('Configuración', 'Actualización Sucursal (Reemplazo)');
+            fetchData();
+        } catch (error) {
+            console.error('Failed to save branch config to DB', error);
+            // LocalStorage Fallback
+            localStorage.setItem('BRANCH_CONFIG_FALLBACK', JSON.stringify(config));
+            setBranchConfig(config);
+            alert('Aviso: No se pudo guardar en la nube (tabla branch_config inexistente?), se guardó localmente.');
+        }
     };
 
     // --- EXPORTED FUNCTIONS ---
@@ -418,29 +528,13 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
 
     // Budgets (Batch Save)
     const saveBudget = async (configs: BudgetConfig[], year: number, week: number) => {
-        // Upsert many logic manual
+        console.log('[saveBudget] Attempting to save', configs.length, 'records');
         const dbConfigs = configs.map(c => mapKeysToDB(c));
 
-        // Manual UPSERT via Fetch
-        const storedSession = localStorage.getItem('BAZ_SESSION');
-        if (!storedSession) throw new Error('No hay sesión activa');
-        const { access_token } = JSON.parse(storedSession);
-
-        const res = await fetch(`${supabaseUrl}/rest/v1/budgets`, {
-            method: 'POST',
-            headers: {
-                'apikey': supabaseKey,
-                'Authorization': `Bearer ${access_token}`,
-                'Content-Type': 'application/json',
-                'Prefer': 'resolution=merge-duplicates' // Critical for Upsert behavior
-            },
-            body: JSON.stringify(dbConfigs)
+        // Use standard authenticated fetch with merge-duplicates AND minimal return
+        await authenticatedFetch('budgets', 'POST', dbConfigs, {
+            'Prefer': 'resolution=merge-duplicates, return=minimal'
         });
-
-        if (!res.ok) {
-            const errText = await res.text();
-            throw new Error(`Error saving budgets: ${errText}`);
-        }
 
         addAuditLog('Actualizar Presupuestos', `Año ${year} Sem ${week}`);
         fetchData();
@@ -448,6 +542,39 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
 
     // Records
     const saveRecord = async (rec: RecordData, cleanupMode?: 'DELETE_WEEKLY' | 'DELETE_DAILY') => {
+        // Clean undefined fields
+        const cleanRec = { ...rec };
+        if (cleanRec.dayOfWeek === undefined) delete (cleanRec as any).dayOfWeek;
+        if (cleanRec.advisorId === undefined) delete (cleanRec as any).advisorId;
+
+        // OPTIMISTIC UPDATE: Update local state immediately so UI feels instant and data persists in context
+        // regardless of network latency.
+        const tempId = cleanRec.id || `temp-${Date.now()}`;
+        const optimisticRec = { ...cleanRec, id: tempId };
+
+        setRecords(prev => {
+            const index = prev.findIndex(r => r.id === tempId || (cleanRec.id && r.id === cleanRec.id));
+            if (index >= 0) {
+                const newArr = [...prev];
+                newArr[index] = optimisticRec;
+                return newArr;
+            } else {
+                // Check if we should replace a matching record by logical key (to avoid dups in UI before partial refresh)
+                // This is complex, but for QuickEntry we mostly rely on ID. 
+                // If ID is empty, it's new.
+                return [...prev, optimisticRec];
+            }
+        });
+
+        // CRITICAL FIX: If we have an ID that is not temp, use PATCH (Update), do NOT delete/insert
+        if (cleanRec.id && !cleanRec.id.startsWith('temp-')) {
+            const dbItem = mapKeysToDB(cleanRec);
+            await authenticatedFetch(`records?id=eq.${cleanRec.id}`, 'PATCH', dbItem);
+            addAuditLog('Editar Registro', `ID: ${cleanRec.id}`);
+            fetchData();
+            return;
+        }
+
         // Handle Cleanup Manual
         if (cleanupMode) {
             const params = new URLSearchParams();
@@ -465,13 +592,12 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                 params.append('advisor_id', `eq.${rec.advisorId}`);
             }
 
-            await authenticatedFetch(`records?${params.toString()}`, 'DELETE');
+            try {
+                await authenticatedFetch(`records?${params.toString()}`, 'DELETE');
+            } catch (e) {
+                console.warn('Cleanup failed or nothing to delete', e);
+            }
         }
-
-        // Clean undefined fields
-        const cleanRec = { ...rec };
-        if (cleanRec.dayOfWeek === undefined) delete (cleanRec as any).dayOfWeek;
-        if (cleanRec.advisorId === undefined) delete (cleanRec as any).advisorId;
 
         // Reuse Manual Add
         await genericAdd('records', cleanRec, 'Registro');
@@ -486,11 +612,121 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
 
     // Supervision
     const addSupervisionLog = async (log: SupervisionLog) => genericAdd('supervision_logs', log, 'Bitácora');
+    const updateSupervisionLog = async (log: SupervisionLog) => genericUpdate('supervision_logs', log, 'Bitácora');
     const deleteSupervisionLog = async (id: string) => genericDelete('supervision_logs', id, 'Bitácora');
 
     // Coaching
     const addCoachingSession = async (s: CoachingSession) => genericAdd('coaching_sessions', s, 'Coaching');
     const deleteCoachingSession = async (id: string) => genericDelete('coaching_sessions', id, 'Coaching');
+
+    // --- SCHEDULE METHODS ---
+    const addScheduleActivity = async (act: ScheduleActivity) => {
+        const dbAct = mapKeysToDB(act);
+        console.log('[addScheduleActivity] Payload:', dbAct);
+
+        // Manual FETCH to bypass client timeout
+        const res = await authenticatedFetch('schedule_activities', 'POST', dbAct, { 'Prefer': 'return=representation' });
+        const data = await res.json();
+
+        console.log('[addScheduleActivity] Success:', data[0]);
+        setScheduleActivities(prev => [...prev, mapKeysToApp(data[0])]);
+    };
+
+    const updateScheduleActivity = async (act: ScheduleActivity) => {
+        const dbAct = mapKeysToDB(act);
+        await authenticatedFetch(`schedule_activities?id=eq.${act.id}`, 'PATCH', dbAct);
+        setScheduleActivities(scheduleActivities.map(a => a.id === act.id ? act : a));
+    };
+
+    const deleteScheduleActivity = async (id: string) => {
+        await authenticatedFetch(`schedule_activities?id=eq.${id}`, 'DELETE');
+        setScheduleActivities(scheduleActivities.filter(a => a.id !== id));
+    };
+
+    const saveScheduleAssignments = async (assigns: ScheduleAssignment[]) => {
+        const dbAssigns = assigns.map(mapKeysToDB);
+        console.log('[saveScheduleAssignments] Payload:', dbAssigns);
+
+        const res = await authenticatedFetch('schedule_assignments', 'POST', dbAssigns, {
+            'Prefer': 'resolution=merge-duplicates, return=representation'
+        });
+        const data = await res.json();
+
+        // Optimistic update (or reload)
+        const updated = mapKeysToApp(data);
+        const ids = updated.map((u: any) => u.id);
+        const others = scheduleAssignments.filter(s => !ids.includes(s.id));
+        setScheduleAssignments([...others, ...updated]);
+    };
+
+    const deleteScheduleAssignment = async (id: string) => {
+        await authenticatedFetch(`schedule_assignments?id=eq.${id}`, 'DELETE');
+        setScheduleAssignments(scheduleAssignments.filter(a => a.id !== id));
+    };
+
+    const updateBranchScheduleConfig = async (config: BranchScheduleConfig) => {
+        const dbConfig = mapKeysToDB(config);
+        console.log('[updateBranchScheduleConfig] Payload:', dbConfig);
+
+        const res = await authenticatedFetch('branch_schedule_config', 'POST', dbConfig, {
+            'Prefer': 'resolution=merge-duplicates, return=representation'
+        });
+        const data = await res.json();
+        setBranchScheduleConfig(mapKeysToApp(data[0]));
+    };
+
+    const toggleFenixCompliance = async (advisorId: string, date: string, timeSlot: string, isCompliant: boolean) => {
+        // Optimistic update
+        const tempId = crypto.randomUUID();
+        const existing = fenixCompliances.find(f => f.advisorId === advisorId && f.date === date && f.timeSlot === timeSlot);
+
+        // Prepare item for DB
+        const newItem: FenixCompliance = {
+            id: existing ? existing.id : tempId,
+            advisorId,
+            date,
+            timeSlot,
+            isCompliant
+        };
+        const dbItem = mapKeysToDB(newItem);
+        if (!existing) delete dbItem.id; // Allow wrapping generation if new
+
+        // 1. Optimistic State Update
+        if (existing) {
+            setFenixCompliances(fenixCompliances.map(f => f.id === existing.id ? newItem : f));
+        } else {
+            setFenixCompliances([...fenixCompliances, newItem]);
+        }
+
+        try {
+            // 2. UPSERT Request (Handles both Insert and Update robustly)
+            // Using on_conflict to merge if unique key (advisor_id, date, time_slot) exists
+            const res = await authenticatedFetch(
+                'fenix_compliance?on_conflict=advisor_id,date,time_slot',
+                'POST',
+                dbItem,
+                { 'Prefer': 'resolution=merge-duplicates, return=representation' }
+            );
+
+            // 3. Update with real ID from server
+            const data = await res.json();
+            if (data && data.length > 0) {
+                const finalItem = mapKeysToApp(data[0]);
+                setFenixCompliances(prev => prev.map(f =>
+                    (f.id === tempId || f.id === existing?.id) ? finalItem : f
+                ));
+            }
+        } catch (error) {
+            console.error('[toggleFenixCompliance] Error:', error);
+            // 4. Rollback
+            if (existing) {
+                setFenixCompliances(fenixCompliances.map(f => f.id === existing.id ? existing : f));
+            } else {
+                setFenixCompliances(fenixCompliances.filter(f => f.id !== tempId));
+            }
+            throw error;
+        }
+    };
 
     const value = {
         user, allUsers, login, logout, addUser, updateUser, deleteUser, updateProfile,
@@ -498,10 +734,16 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
         indicators, addIndicator, updateIndicator, deleteIndicator,
         budgets, saveBudget,
         records, saveRecord, deleteRecord,
+        branchConfig, updateBranchConfig,
         rrhhEvents, addRRHHEvent, updateRRHHEvent, deleteRRHHEvent,
-        supervisionLogs, addSupervisionLog, deleteSupervisionLog,
+        supervisionLogs, addSupervisionLog, updateSupervisionLog, deleteSupervisionLog,
         coachingSessions, addCoachingSession, deleteCoachingSession,
-        auditLogs
+        auditLogs,
+        // Schedule
+        scheduleActivities, addScheduleActivity, updateScheduleActivity, deleteScheduleActivity,
+        scheduleAssignments, saveScheduleAssignments, deleteScheduleAssignment,
+        branchScheduleConfig, updateBranchScheduleConfig,
+        fenixCompliances, toggleFenixCompliance
     };
 
     return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

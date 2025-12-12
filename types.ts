@@ -17,6 +17,16 @@ export enum AppliesTo {
   ALL = 'Todos'
 }
 
+export interface BranchConfig {
+  id?: string;
+  ceco: string;
+  name: string;
+  region: string;
+  territory: string;
+  leaderName: string;
+  keyIndicatorIds?: string[]; // IDs of the 4 Key Indicators for the Managers Board
+}
+
 export type IndicatorGroup = 'COLOCACION' | 'CAPTACION' | 'TOTAL_SAN';
 
 export interface Advisor {
@@ -27,50 +37,51 @@ export interface Advisor {
   photoUrl?: string; // Base64
   birthDate?: string; // YYYY-MM-DD
   hireDate?: string;  // YYYY-MM-DD
+  shiftPreference?: 'OPENING' | 'CLOSING';
 }
 
 export interface Indicator {
   id: string;
   name: string;
-  appliesTo: AppliesTo; 
-  roles?: string[];     
+  appliesTo: AppliesTo;
+  roles?: string[];
   unit: '$' | '%' | '#';
-  weightLoan?: number;        
-  weightAffiliation?: number; 
-  isCumulative?: boolean;     
-  isAverage?: boolean;        
-  group?: IndicatorGroup;     
+  weightLoan?: number;
+  weightAffiliation?: number;
+  isCumulative?: boolean;
+  isAverage?: boolean;
+  group?: IndicatorGroup;
 }
 
 export interface BudgetConfig {
   id: string;
   indicatorId: string;
-  targetId: string; 
-  year: number;     
-  week: number;     
+  targetId: string;
+  year: number;
+  week: number;
   periodType: 'WEEKLY' | 'DAILY';
-  dayOfWeek?: number; 
+  dayOfWeek?: number;
   amount: number;
 }
 
 export interface RecordData {
   id: string;
-  date: string; 
+  date: string;
   year: number;
   week: number;
   type: ReportType;
-  frequency: 'WEEKLY' | 'DAILY'; 
-  dayOfWeek?: number; 
-  advisorId?: string; 
+  frequency: 'WEEKLY' | 'DAILY';
+  dayOfWeek?: number;
+  advisorId?: string;
   values: { [indicatorId: string]: number };
 }
 
 export interface User {
   id: string;
   username: string;
-  password?: string; 
-  role: 'ADMIN' | 'EDITOR' | 'LECTOR'; 
-  photoUrl?: string; 
+  password?: string;
+  role: 'ADMIN' | 'EDITOR' | 'LECTOR';
+  photoUrl?: string;
 }
 
 export interface AuditLogEntry {
@@ -100,7 +111,7 @@ export interface SupervisionLog {
   id: string;
   date: string;
   advisorId: string;
-  type: 'FAILURE' | 'COACHING' | 'ACHIEVEMENT';
+  type: 'FAILURE' | 'COACHING' | 'ACHIEVEMENT' | 'MINUTA_WHATSAPP' | 'PMD_FORMAL';
   indicatorName: string; // e.g., 'Uniforme', 'Efectivo', 'Actitud'
   details: string;
   photoUrl?: string;
@@ -120,5 +131,45 @@ export interface CoachingSession {
 
 export interface DateFilter {
   type: 'DAY' | 'WEEK' | '2WEEKS' | '4WEEKS' | 'TRIMESTER' | 'YEAR';
-  value?: string; 
+  value?: string;
 }
+
+// --- SCHEDULE MANAGEMENT TYPES ---
+
+export interface ScheduleActivity {
+  id: string;
+  name: string;
+  shortName?: string; // Abbreviation (e.g. "COM")
+  color: string; // Hex code
+  isProtected: boolean; // Triggers Fenix logic
+}
+
+export interface ScheduleAssignment {
+  id: string;
+  advisorId: string;
+  dayOfWeek: number; // 1=Monday, 7=Sunday
+  startTime: string; // "HH:mm" 24h format
+  endTime: string;   // "HH:mm" 24h format
+  activityId: string;
+}
+
+export interface BranchScheduleConfig {
+  id?: string; // Single record usually
+  openTime: string; // "08:30" (Default / Fallback)
+  closeTime: string; // "21:00" (Default / Fallback)
+  days?: {
+    dayOfWeek: number; // 0=Sunday, 1=Monday... (Match JS getDay or existing standard 1-7. App uses 1=Mon, 7=Sun in ScheduleAssignment)
+    openTime: string;
+    closeTime: string;
+    isOpen: boolean;
+  }[];
+}
+
+export interface FenixCompliance {
+  id: string;
+  advisorId: string;
+  date: string; // YYYY-MM-DD
+  timeSlot: string; // "HH:mm"
+  isCompliant: boolean;
+}
+
