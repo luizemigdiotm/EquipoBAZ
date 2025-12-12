@@ -3,7 +3,7 @@ import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  base: "/equipobaz/",
+  base: "./",
   resolve: {
     alias: [
       // Changed from '@' to '@/' to avoid conflicts with npm packages starting with @ (like @supabase)
