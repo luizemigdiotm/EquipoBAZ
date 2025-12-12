@@ -538,15 +538,21 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
 
         configs.forEach(c => {
             // Normalization: Explicitly set optional fields to null if undefined to ensure key exists
-            const normalized = {
-                ...c,
+            // AND filter out any extra keys that might be in the object (spread operator risk)
+            const normalizedCommon = {
+                indicatorId: c.indicatorId,
+                targetId: c.targetId,
+                year: c.year,
+                week: c.week,
+                periodType: c.periodType,
                 dayOfWeek: c.dayOfWeek !== undefined ? c.dayOfWeek : null,
+                amount: c.amount
             };
 
             if (c.id) {
-                updates.push(normalized);
+                updates.push({ ...normalizedCommon, id: c.id });
             } else {
-                inserts.push(normalized);
+                inserts.push(normalizedCommon);
             }
         });
 
