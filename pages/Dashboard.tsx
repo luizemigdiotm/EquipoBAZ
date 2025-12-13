@@ -247,10 +247,12 @@ export const Dashboard = () => {
         if (viewMode === 'ADVISOR' && !selectedAdvisorId) return 0;
 
         const relevantRecords = dashboardRecords.filter(r => {
-            // FIX: Use BRANCH records for Branch View because they are the "Official" source 
-            // (consistent with the Table/Modal which the user verified as correct).
-            // Do not mix with INDIVIDUAL to avoid double counting.
-            if (viewMode === 'BRANCH') return r.type === ReportType.BRANCH;
+            // FIX: STRICT FILTER for Branch View.
+            // 1. Must be literally 'Sucursal' type.
+            // 2. Must NOT have an advisorId (to filter out any malformed rows).
+            if (viewMode === 'BRANCH') {
+                return (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !r.advisorId;
+            }
             return r.type === ReportType.INDIVIDUAL && r.advisorId === selectedAdvisorId;
         });
 
