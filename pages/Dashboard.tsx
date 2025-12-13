@@ -247,9 +247,10 @@ export const Dashboard = () => {
         if (viewMode === 'ADVISOR' && !selectedAdvisorId) return 0;
 
         const relevantRecords = dashboardRecords.filter(r => {
-            // FIX: Always aggregate from INDIVIDUAL records to ensure accuracy.
-            // Ignore stale 'BRANCH' type records.
-            if (viewMode === 'BRANCH') return r.type === ReportType.INDIVIDUAL;
+            // FIX: Use BRANCH records for Branch View because they are the "Official" source 
+            // (consistent with the Table/Modal which the user verified as correct).
+            // Do not mix with INDIVIDUAL to avoid double counting.
+            if (viewMode === 'BRANCH') return r.type === ReportType.BRANCH;
             return r.type === ReportType.INDIVIDUAL && r.advisorId === selectedAdvisorId;
         });
 
