@@ -283,10 +283,13 @@ export const Dashboard = () => {
             recs.forEach(r => {
                 const val = r.values[indicator.id] || 0;
                 if (r.frequency === 'DAILY') {
-                    // If multiple records for same day, OVERWRITE (assume last is correct/latest)
-                    // or use logic to find max/latest. For now, Map.set overwrites, handling duplicates.
+                    // Overwrite duplicates for same day
                     if (r.dayOfWeek !== undefined) dailyValues.set(r.dayOfWeek, val);
-                } else {
+                } else if (filterType !== 'WEEK') {
+                    // Only consider WEEKLY records if NOT in 'WEEK' view (or if we want to allow mixed).
+                    // verification suggests User wants Table Logic: Sum of Dailies ONLY for Weekly View.
+                    // Ignoring Weekly records in WEEK view prevents "Zombie" Weekly data from appearing 
+                    // when Dailies are deleted.
                     weeklyVal = val;
                     hasWeekly = true;
                 }
@@ -294,10 +297,8 @@ export const Dashboard = () => {
 
             let advisorVal = 0;
             if (dailyValues.size > 0) {
-                // If has dailies, use sum of dailies (Ignore weekly "ghost")
                 advisorVal = Array.from(dailyValues.values()).reduce((a, b) => a + b, 0);
             } else if (hasWeekly) {
-                // Fallback to weekly
                 advisorVal = weeklyVal;
             }
 
