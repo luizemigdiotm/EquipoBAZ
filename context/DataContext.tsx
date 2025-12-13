@@ -622,33 +622,26 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
             if (allSavedApp.length > 0) {
                 console.log('[saveBudget] Server returned', allSavedApp.length, 'saved items. Updating local state.');
 
-                // OPTIMIZED STATE UPDATE:
-                // Instead of fetching everything (which might be slow or return stale data),
-                // we merge the server response directly into our current state.
+                // OPTIMIZED STATE UPDATE (Map-based for O(N) performance instead of O(N^2)):
                 setBudgets(prev => {
-                    let newBudgets = [...prev];
+                    // 1. Create a Map of existing budgets for fast lookup/replacement
+                    // Key: unique composite key (indicator-target-year-week-period-day)
+                    const budgetMap = new Map<string, BudgetConfig>();
 
-                    allSavedApp.forEach(saved => {
-                        // 1. Remove any existing item with the same ID (update case)
-                        newBudgets = newBudgets.filter(b => b.id !== saved.id);
-
-                        // 2. Remove any existing item with the same LOGICAL key (insert case / optimistic replace)
-                        // This prevents duplicates if the UI had a temp version or if we are replacing a value.
-                        newBudgets = newBudgets.filter(b => !(
-                            b.indicatorId === saved.indicatorId &&
-                            b.targetId === saved.targetId &&
-                            b.year === saved.year &&
-                            b.week === saved.week &&
-                            b.periodType === saved.periodType &&
-                            // Careful with dayOfWeek: 0 vs null vs undefined
-                            (b.dayOfWeek === saved.dayOfWeek || (b.dayOfWeek == null && saved.dayOfWeek == null) || (b.dayOfWeek === 0 && saved.dayOfWeek === 0))
-                        ));
-
-                        // 3. Add the authoritative saved item
-                        newBudgets.push(saved);
+                    prev.forEach(b => {
+                        // Composite key: Ind-Tgt-Yr-Wk-Per-Day
+                        const key = `${b.indicatorId}-${b.targetId}-${b.year}-${b.week}-${b.periodType}-${b.dayOfWeek ?? 'null'}`;
+                        budgetMap.set(key, b);
                     });
 
-                    return newBudgets;
+                    // 2. Update with new items
+                    allSavedApp.forEach(saved => {
+                        const key = `${saved.indicatorId}-${saved.targetId}-${saved.year}-${saved.week}-${saved.periodType}-${saved.dayOfWeek ?? 'null'}`;
+                        budgetMap.set(key, saved);
+                    });
+
+                    // 3. Return values
+                    return Array.from(budgetMap.values());
                 });
             }
 

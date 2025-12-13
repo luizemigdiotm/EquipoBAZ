@@ -247,11 +247,9 @@ export const Dashboard = () => {
         if (viewMode === 'ADVISOR' && !selectedAdvisorId) return 0;
 
         const relevantRecords = dashboardRecords.filter(r => {
-            // FIX: Align with IndicatorHistoryModal Logic.
-            // If BRANCH view, use ONLY BRANCH records (aggregates).
-            // If ADVISOR view, use ONLY INDIVIDUAL records for that advisor.
-            // DO NOT mix them to avoid double counting.
-            if (viewMode === 'BRANCH') return r.type === ReportType.BRANCH;
+            // FIX: Always aggregate from INDIVIDUAL records to ensure accuracy.
+            // Ignore stale 'BRANCH' type records.
+            if (viewMode === 'BRANCH') return r.type === ReportType.INDIVIDUAL;
             return r.type === ReportType.INDIVIDUAL && r.advisorId === selectedAdvisorId;
         });
 
