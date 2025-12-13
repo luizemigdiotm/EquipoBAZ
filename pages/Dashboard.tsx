@@ -266,13 +266,80 @@ export const Dashboard = () => {
             });
             return Math.ceil(count > 0 ? sum / count : 0);
         } else {
-            let sum = 0;
-            relevantRecords.forEach(r => {
-                sum += (r.values[indicator.id] || 0);
-            });
-            return Math.ceil(sum);
+            // FIX: Deduplicate logic. Prioritize Daily records if present, else fall back to Weekly.
+            // Do NOT sum both, as that causes double counting (e.g. 534 daily sum + 130 weekly ghost = 664).
+            const dailies = relevantRecords.filter(r => r.frequency === 'DAILY');
+            const weeklies = relevantRecords.filter(r => r.frequency === 'WEEKLY');
+
+            if (dailies.length > 0) {
+                const sumDaily = dailies.reduce((sum, r) => sum + (r.values[indicator.id] || 0), 0);
+                return Math.ceil(sumDaily);
+            } else if (weeklies.length > 0) {
+                const sumWeekly = weeklies.reduce((sum, r) => sum + (r.values[indicator.id] || 0), 0);
+                return Math.ceil(sumWeekly);
+            }
+            return 0;
         }
     };
+
+    // ... [Inside IndicatorHistoryModal tableData useMemo] ...
+
+    // ... relevantBudgets filter ...
+
+    // Deduplicate Daily Budgets
+    const dailyBudgetMap = new Map<number, number>();
+    relevantBudgets.filter((b: any) => b.periodType === 'DAILY').forEach((b: any) => {
+        // Ensure key is Number to match day.id
+        if (b.dayOfWeek !== undefined && b.dayOfWeek !== null) {
+            dailyBudgetMap.set(Number(b.dayOfWeek), b.amount);
+        }
+    });
+
+    const weeklyConfig = relevantBudgets.find((b: any) => b.periodType === 'WEEKLY');
+
+    // Calculate Total Target carefully
+    let weeklyTargetTotal = 0;
+    if (weeklyConfig) {
+        weeklyTargetTotal = weeklyConfig.amount;
+    } else {
+        weeklyTargetTotal = Array.from(dailyBudgetMap.values()).reduce((sum, val) => sum + val, 0);
+    }
+
+    // Fix: If isAverage, don't divide by 7
+    const dailyTargetFallback = isAverage ? weeklyTargetTotal : (weeklyTargetTotal > 0 ? weeklyTargetTotal / 7 : 0);
+
+    rows = days.map(day => {
+        // Correct Priority: Specific Daily > Weekly Fallback
+        let target = 0;
+        // Robust lookup: try Number
+        const specificAmount = dailyBudgetMap.get(Number(day.id));
+
+        if (specificAmount !== undefined) {
+            target = specificAmount;
+        } else if (weeklyConfig) {
+            target = dailyTargetFallback;
+        }
+
+        const dailyR = currentRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);
+        const real = dailyR ? (dailyR.values[indicator.id] || 0) : 0;
+        const dailyPrev = prevRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);
+        const prev = dailyPrev ? (dailyPrev.values[indicator.id] || 0) : 0;
+        totalReal += real; totalTarget += target; totalPrev += prev;
+        return { label: day.label, target, real, prev };
+    });
+
+    // Fix: Don't overwrite totalReal with Weekly Record if we just calculated it from Dailies
+    // const weeklyRec = currentRecords.find((r: RecordData) => r.frequency === 'WEEKLY'); if (weeklyRec) totalReal = weeklyRec.values[indicator.id] || 0;
+
+    // Logic: If we found dailies (rows summed > 0 or currentRecords has daily), keep sum. 
+    // Only use weeklyRec if totalReal is 0 AND we have a weekly rec? 
+    // Actually, if we are in 'Desglose Diario', showing the sum of days is always more accurate to the view than a stale weekly total.
+    // If the user entered Weekly data only, 'days' loop (frequency='DAILY') yields 0 reals. 
+    // In that case, rows show 0. Modal shows 0. Total shows Weekly?
+    // If rows show 0, Total should probably match. showing 664 in Total while rows are 0 is confusing.
+    // So removing the overwrite is correct for consistency. 
+    // Use sum of rows.
+
 
     const displayMetrics = useMemo(() => {
         if (viewMode === 'ADVISOR' && !selectedAdvisorId) return [];
@@ -996,7 +1063,10 @@ const IndicatorHistoryModal = ({ indicator, year, week, quarter, filterType, rec
             // Deduplicate Daily Budgets
             const dailyBudgetMap = new Map<number, number>();
             relevantBudgets.filter((b: any) => b.periodType === 'DAILY').forEach((b: any) => {
-                if (b.dayOfWeek !== undefined) dailyBudgetMap.set(b.dayOfWeek, b.amount);
+                // Ensure key is Number and handle 0 correctly
+                if (b.dayOfWeek !== undefined && b.dayOfWeek !== null) {
+                    dailyBudgetMap.set(Number(b.dayOfWeek), b.amount);
+                }
             });
 
             const weeklyConfig = relevantBudgets.find((b: any) => b.periodType === 'WEEKLY');
@@ -1009,17 +1079,14 @@ const IndicatorHistoryModal = ({ indicator, year, week, quarter, filterType, rec
                 weeklyTargetTotal = Array.from(dailyBudgetMap.values()).reduce((sum, val) => sum + val, 0);
             }
 
-            // If Weekly Config exists, prioritize it to avoid "Duplication" from partial Daily records (e.g. Adjusted Commitments)
-            // Unless the user strictly wants Daily overrides to show.
-            // Given the user report "Domingo se duplica", we will enforce Weekly Average if Weekly Config is present.
-
             // Fix: If isAverage, don't divide by 7
             const dailyTargetFallback = isAverage ? weeklyTargetTotal : (weeklyTargetTotal > 0 ? weeklyTargetTotal / 7 : 0);
 
             rows = days.map(day => {
                 // Correct Priority: Specific Daily > Weekly Fallback
                 let target = 0;
-                const specificAmount = dailyBudgetMap.get(day.id);
+                // Robust lookup
+                const specificAmount = dailyBudgetMap.get(Number(day.id));
 
                 if (specificAmount !== undefined) {
                     target = specificAmount;
@@ -1034,7 +1101,8 @@ const IndicatorHistoryModal = ({ indicator, year, week, quarter, filterType, rec
                 totalReal += real; totalTarget += target; totalPrev += prev;
                 return { label: day.label, target, real, prev };
             });
-            const weeklyRec = currentRecords.find((r: RecordData) => r.frequency === 'WEEKLY'); if (weeklyRec) totalReal = weeklyRec.values[indicator.id] || 0;
+            // REMOVED: Weekly Record Overwrite. Trust the Daily Sum for "Desglose Diario".
+            // const weeklyRec = currentRecords.find((r: RecordData) => r.frequency === 'WEEKLY'); if (weeklyRec) totalReal = weeklyRec.values[indicator.id] || 0;
             const weeklyPrevRec = prevRecords.find((r: RecordData) => r.frequency === 'WEEKLY'); if (weeklyPrevRec) totalPrev = weeklyPrevRec.values[indicator.id] || 0;
         } else {
             let startWeek = 1; let endWeek = 52;
