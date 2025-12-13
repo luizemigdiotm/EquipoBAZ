@@ -322,63 +322,7 @@ export const Dashboard = () => {
         }
     };
 
-    // ... [Inside IndicatorHistoryModal tableData useMemo] ...
 
-    // ... relevantBudgets filter ...
-
-    // Deduplicate Daily Budgets
-    const dailyBudgetMap = new Map<number, number>();
-    relevantBudgets.filter((b: any) => b.periodType === 'DAILY').forEach((b: any) => {
-        // Ensure key is Number to match day.id
-        if (b.dayOfWeek !== undefined && b.dayOfWeek !== null) {
-            dailyBudgetMap.set(Number(b.dayOfWeek), b.amount);
-        }
-    });
-
-    const weeklyConfig = relevantBudgets.find((b: any) => b.periodType === 'WEEKLY');
-
-    // Calculate Total Target carefully
-    let weeklyTargetTotal = 0;
-    if (weeklyConfig) {
-        weeklyTargetTotal = weeklyConfig.amount;
-    } else {
-        weeklyTargetTotal = Array.from(dailyBudgetMap.values()).reduce((sum, val) => sum + val, 0);
-    }
-
-    // Fix: If isAverage, don't divide by 7
-    const dailyTargetFallback = isAverage ? weeklyTargetTotal : (weeklyTargetTotal > 0 ? weeklyTargetTotal / 7 : 0);
-
-    rows = days.map(day => {
-        // Correct Priority: Specific Daily > Weekly Fallback
-        let target = 0;
-        // Robust lookup: try Number
-        const specificAmount = dailyBudgetMap.get(Number(day.id));
-
-        if (specificAmount !== undefined) {
-            target = specificAmount;
-        } else if (weeklyConfig) {
-            target = dailyTargetFallback;
-        }
-
-        const dailyR = currentRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);
-        const real = dailyR ? (dailyR.values[indicator.id] || 0) : 0;
-        const dailyPrev = prevRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);
-        const prev = dailyPrev ? (dailyPrev.values[indicator.id] || 0) : 0;
-        totalReal += real; totalTarget += target; totalPrev += prev;
-        return { label: day.label, target, real, prev };
-    });
-
-    // Fix: Don't overwrite totalReal with Weekly Record if we just calculated it from Dailies
-    // const weeklyRec = currentRecords.find((r: RecordData) => r.frequency === 'WEEKLY'); if (weeklyRec) totalReal = weeklyRec.values[indicator.id] || 0;
-
-    // Logic: If we found dailies (rows summed > 0 or currentRecords has daily), keep sum. 
-    // Only use weeklyRec if totalReal is 0 AND we have a weekly rec? 
-    // Actually, if we are in 'Desglose Diario', showing the sum of days is always more accurate to the view than a stale weekly total.
-    // If the user entered Weekly data only, 'days' loop (frequency='DAILY') yields 0 reals. 
-    // In that case, rows show 0. Modal shows 0. Total shows Weekly?
-    // If rows show 0, Total should probably match. showing 664 in Total while rows are 0 is confusing.
-    // So removing the overwrite is correct for consistency. 
-    // Use sum of rows.
 
 
     const displayMetrics = useMemo(() => {
@@ -1049,33 +993,7 @@ export const Dashboard = () => {
                     <MuteAdvisorsModal onClose={() => setShowMute(false)} records={records} advisors={advisors} indicators={indicators} year={selectedYear} week={selectedWeek} />
                 )
             }
-            {/* DEBUG PANEL - REMOVE AFTER FIX */}
-            {viewMode === 'BRANCH' && (
-                <div className="fixed bottom-4 left-4 bg-black/80 text-white p-4 rounded text-xs z-50 max-w-lg font-mono">
-                    <h3 className="font-bold border-b mb-2">DEBUG: Branch Aggregation Filter</h3>
-                    <div>Total Records (Raw): {dashboardRecords.length}</div>
-                    <div>
-                        Filtered for Aggregation: {
-                            dashboardRecords.filter(r => (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !r.advisorId).length
-                        }
-                    </div>
-                    <div className="mt-2 text-yellow-300">
-                        <strong>Rejected (Individual):</strong> {
-                            dashboardRecords.filter(r => r.type === 'Individual' || r.type === ReportType.INDIVIDUAL).length
-                        }
-                    </div>
-                    <div className="mt-2 text-red-300">
-                        <strong>Oddities (Type Sucursal + Has Advisor):</strong> {
-                            dashboardRecords.filter(r => (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !!r.advisorId).length
-                        }
-                    </div>
-                    <div className="mt-2 text-blue-300">
-                        <strong>Oddities (Type Indiv + No Advisor):</strong> {
-                            dashboardRecords.filter(r => (r.type === 'Individual' || r.type === ReportType.INDIVIDUAL) && !r.advisorId).length
-                        }
-                    </div>
-                </div>
-            )}
+
         </div >
     );
 };
@@ -1223,33 +1141,7 @@ const IndicatorHistoryModal = ({ indicator, year, week, quarter, filterType, rec
                     <div className={`mt-6 p-4 rounded-lg border ${muteAdvisorsList.length > 0 ? 'bg-red-50 border-red-100' : 'bg-green-50 border-green-100'}`}><div className="flex items-center gap-2 mb-3">{muteAdvisorsList.length > 0 ? <AlertTriangle className="text-red-500" /> : <CheckCircle className="text-green-500" />}<h4 className={`font-bold ${muteAdvisorsList.length > 0 ? 'text-red-800' : 'text-green-800'}`}>{muteAdvisorsList.length > 0 ? `Asesores mudos en ${indicator.name}` : `Sin asesores mudos en ${indicator.name}`}</h4></div>{muteAdvisorsList.length > 0 && (<div className="flex flex-wrap gap-2">{muteAdvisorsList.map((adv: Advisor) => (<span key={adv.id} className="inline-flex items-center px-3 py-1 rounded-full bg-white border border-red-200 text-red-700 text-sm font-medium shadow-sm"><span className="w-2 h-2 rounded-full bg-red-500 mr-2"></span>{adv.name}</span>))}</div>)}</div>
                 </div>
             </div>
-            {/* DEBUG PANEL - REMOVE AFTER FIX */}
-            {viewMode === 'BRANCH' && (
-                <div className="fixed bottom-4 left-4 bg-black/80 text-white p-4 rounded text-xs z-50 max-w-lg font-mono">
-                    <h3 className="font-bold border-b mb-2">DEBUG: Branch Aggregation Filter</h3>
-                    <div>Total Records (Raw): {dashboardRecords.length}</div>
-                    <div>
-                        Filtered for Aggregation: {
-                            dashboardRecords.filter(r => (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !r.advisorId).length
-                        }
-                    </div>
-                    <div className="mt-2 text-yellow-300">
-                        <strong>Rejected (Individual):</strong> {
-                            dashboardRecords.filter(r => r.type === 'Individual' || r.type === ReportType.INDIVIDUAL).length
-                        }
-                    </div>
-                    <div className="mt-2 text-red-300">
-                        <strong>Oddities (Type Sucursal + Has Advisor):</strong> {
-                            dashboardRecords.filter(r => (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !!r.advisorId).length
-                        }
-                    </div>
-                    <div className="mt-2 text-blue-300">
-                        <strong>Oddities (Type Indiv + No Advisor):</strong> {
-                            dashboardRecords.filter(r => (r.type === 'Individual' || r.type === ReportType.INDIVIDUAL) && !r.advisorId).length
-                        }
-                    </div>
-                </div>
-            )}
+            {/* DEBUG PANEL REMOVED */}
         </div>
     );
 };
