@@ -833,8 +833,14 @@ const BudgetManager = () => {
         await saveBudget(configs, year, week);
       } else if (propagationMode === 'YEAR') {
         if (confirm(`¿Está seguro de replicar este presupuesto a las 52 semanas del año ${year}?`)) {
+          // OPTIMIZATION: Build massive array and save ONCE to avoid 52 re-renders/fetches
+          const allConfigs: any[] = [];
+
           for (let w = 1; w <= 52; w++) {
-            const propagatedConfigs = configs.map(c => {
+            const weekConfigs = configs.map(c => {
+              // Must find existing ID to allow Upsert/Update logic in saveBudget
+              // This relies on the current 'budgets' state having data for all weeks. 
+              // Since we forced 0-9999 fetch, it should be fine.
               const existing = budgets.find(b =>
                 b.year === year &&
                 b.week === w &&
@@ -845,8 +851,9 @@ const BudgetManager = () => {
               );
               return { ...c, id: existing ? existing.id : '', week: w };
             });
-            await saveBudget(propagatedConfigs, year, w);
+            allConfigs.push(...weekConfigs);
           }
+          await saveBudget(allConfigs, year, -1); // -1 or 0 as 'week' generic marker
         }
       } else if (propagationMode === 'TRIMESTER') {
         const currentQuarter = week <= 13 ? 1 : week <= 26 ? 2 : week <= 39 ? 3 : 4;
@@ -854,8 +861,10 @@ const BudgetManager = () => {
         const endWeek = currentQuarter * 13;
 
         if (confirm(`¿Está seguro de replicar este presupuesto al Trimestre Q${currentQuarter} (Semanas ${startWeek}-${endWeek})?`)) {
+          // OPTIMIZATION: Batch save
+          const allConfigs: any[] = [];
           for (let w = startWeek; w <= endWeek; w++) {
-            const propagatedConfigs = configs.map(c => {
+            const weekConfigs = configs.map(c => {
               const existing = budgets.find(b =>
                 b.year === year &&
                 b.week === w &&
@@ -866,8 +875,9 @@ const BudgetManager = () => {
               );
               return { ...c, id: existing ? existing.id : '', week: w };
             });
-            await saveBudget(propagatedConfigs, year, w);
+            allConfigs.push(...weekConfigs);
           }
+          await saveBudget(allConfigs, year, -1);
         }
       }
     } catch (error: any) {
