@@ -246,810 +246,838 @@ export const Dashboard = () => {
     const getAggregatedValue = (indicator: any) => {
         if (viewMode === 'ADVISOR' && !selectedAdvisorId) return 0;
 
-        // FIX: PARANOID FILTER for Branch View.
-        // Explicitly exclude ANY individual record first.
-        if (viewMode === 'BRANCH') {
-            if (r.type === 'Individual' || r.type === ReportType.INDIVIDUAL) return false;
-            // After explicit exclusion, require strict Branch type match AND no advisorId
-            return (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !r.advisorId;
-        }
-        return r.type === ReportType.INDIVIDUAL && r.advisorId === selectedAdvisorId;
-    });
+        const relevantRecords = dashboardRecords.filter(r => {
+            // FIX: PARANOID FILTER for Branch View.
+            // Explicitly exclude ANY individual record first.
+            if (viewMode === 'BRANCH') {
+                if (r.type === 'Individual' || r.type === ReportType.INDIVIDUAL) return false;
+                // After explicit exclusion, require strict Branch type match AND no advisorId
+                return (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !r.advisorId;
+            }
+            return r.type === ReportType.INDIVIDUAL && r.advisorId === selectedAdvisorId;
+        });
 
-    // Auto-detect average type if unit is %
-    const isAverage = indicator.isAverage || indicator.unit === '%';
+        // Auto-detect average type if unit is %
+        const isAverage = indicator.isAverage || indicator.unit === '%';
 
-    // ROBUST AGGREGATION: Group by Advisor -> Deduplicate frequency -> Sum
-    // This handles:
-    // 1. Hybrid scenarios (Advisor A daily, Advisor B weekly)
-    // 2. Database duplicates (Multiple rows for same Monday) by taking the last/first one
+        // ROBUST AGGREGATION: Group by Advisor -> Deduplicate frequency -> Sum
+        // This handles:
+        // 1. Hybrid scenarios (Advisor A daily, Advisor B weekly)
+        // 2. Database duplicates (Multiple rows for same Monday) by taking the last/first one
 
-    const advisorMap = new Map<string, RecordData[]>();
-    relevantRecords.forEach(r => {
-        const k = r.advisorId;
-        if (!advisorMap.has(k)) advisorMap.set(k, []);
-        advisorMap.get(k)?.push(r);
-    });
+        const advisorMap = new Map<string, RecordData[]>();
+        relevantRecords.forEach(r => {
+            const k = r.advisorId;
+            if (!advisorMap.has(k)) advisorMap.set(k, []);
+            advisorMap.get(k)?.push(r);
+        });
 
-    let totalSum = 0;
-    let totalCount = 0;
+        let totalSum = 0;
+        let totalCount = 0;
 
-    advisorMap.forEach((recs) => {
-        // For THIS advisor, decide value.
-        // Deduplicate Daily: Map<day, val>
-        const dailyValues = new Map<number, number>();
-        // Deduplicate Weekly: Just take one
-        let weeklyVal = 0;
-        let hasWeekly = false;
+        advisorMap.forEach((recs) => {
+            // For THIS advisor, decide value.
+            // Deduplicate Daily: Map<day, val>
+            const dailyValues = new Map<number, number>();
+            // Deduplicate Weekly: Just take one
+            let weeklyVal = 0;
+            let hasWeekly = false;
 
-        recs.forEach(r => {
-            const val = r.values[indicator.id] || 0;
-            if (r.frequency === 'DAILY') {
-                // Overwrite duplicates for same day
-                if (r.dayOfWeek !== undefined) dailyValues.set(r.dayOfWeek, val);
-            } else if (filterType !== 'WEEK') {
-                // Only consider WEEKLY records if NOT in 'WEEK' view (or if we want to allow mixed).
-                // verification suggests User wants Table Logic: Sum of Dailies ONLY for Weekly View.
-                // Ignoring Weekly records in WEEK view prevents "Zombie" Weekly data from appearing 
-                // when Dailies are deleted.
-                weeklyVal = val;
-                hasWeekly = true;
+            recs.forEach(r => {
+                const val = r.values[indicator.id] || 0;
+                if (r.frequency === 'DAILY') {
+                    // Overwrite duplicates for same day
+                    if (r.dayOfWeek !== undefined) dailyValues.set(r.dayOfWeek, val);
+                } else if (filterType !== 'WEEK') {
+                    // Only consider WEEKLY records if NOT in 'WEEK' view (or if we want to allow mixed).
+                    // verification suggests User wants Table Logic: Sum of Dailies ONLY for Weekly View.
+                    // Ignoring Weekly records in WEEK view prevents "Zombie" Weekly data from appearing 
+                    // when Dailies are deleted.
+                    weeklyVal = val;
+                    hasWeekly = true;
+                }
+            });
+
+            let advisorVal = 0;
+            if (dailyValues.size > 0) {
+                advisorVal = Array.from(dailyValues.values()).reduce((a, b) => a + b, 0);
+            } else if (hasWeekly) {
+                advisorVal = weeklyVal;
+            }
+
+            if (indicator.isAverage || indicator.unit === '%') {
+                // For averages, we might need different logic (e.g. sum of percentages? or avg of percentages?)
+                // Usually avg of percentages = sum / count
+                totalSum += advisorVal;
+                totalCount++;
+            } else {
+                totalSum += advisorVal;
             }
         });
 
-        let advisorVal = 0;
-        if (dailyValues.size > 0) {
-            advisorVal = Array.from(dailyValues.values()).reduce((a, b) => a + b, 0);
-        } else if (hasWeekly) {
-            advisorVal = weeklyVal;
-        }
-
         if (indicator.isAverage || indicator.unit === '%') {
-            // For averages, we might need different logic (e.g. sum of percentages? or avg of percentages?)
-            // Usually avg of percentages = sum / count
-            totalSum += advisorVal;
-            totalCount++;
+            return Math.ceil(totalCount > 0 ? totalSum / totalCount : 0);
         } else {
-            totalSum += advisorVal;
+            return Math.ceil(totalSum);
+        }
+    };
+
+    // ... [Inside IndicatorHistoryModal tableData useMemo] ...
+
+    // ... relevantBudgets filter ...
+
+    // Deduplicate Daily Budgets
+    const dailyBudgetMap = new Map<number, number>();
+    relevantBudgets.filter((b: any) => b.periodType === 'DAILY').forEach((b: any) => {
+        // Ensure key is Number to match day.id
+        if (b.dayOfWeek !== undefined && b.dayOfWeek !== null) {
+            dailyBudgetMap.set(Number(b.dayOfWeek), b.amount);
         }
     });
 
-    if (indicator.isAverage || indicator.unit === '%') {
-        return Math.ceil(totalCount > 0 ? totalSum / totalCount : 0);
+    const weeklyConfig = relevantBudgets.find((b: any) => b.periodType === 'WEEKLY');
+
+    // Calculate Total Target carefully
+    let weeklyTargetTotal = 0;
+    if (weeklyConfig) {
+        weeklyTargetTotal = weeklyConfig.amount;
     } else {
-        return Math.ceil(totalSum);
-    }
-};
-
-// ... [Inside IndicatorHistoryModal tableData useMemo] ...
-
-// ... relevantBudgets filter ...
-
-// Deduplicate Daily Budgets
-const dailyBudgetMap = new Map<number, number>();
-relevantBudgets.filter((b: any) => b.periodType === 'DAILY').forEach((b: any) => {
-    // Ensure key is Number to match day.id
-    if (b.dayOfWeek !== undefined && b.dayOfWeek !== null) {
-        dailyBudgetMap.set(Number(b.dayOfWeek), b.amount);
-    }
-});
-
-const weeklyConfig = relevantBudgets.find((b: any) => b.periodType === 'WEEKLY');
-
-// Calculate Total Target carefully
-let weeklyTargetTotal = 0;
-if (weeklyConfig) {
-    weeklyTargetTotal = weeklyConfig.amount;
-} else {
-    weeklyTargetTotal = Array.from(dailyBudgetMap.values()).reduce((sum, val) => sum + val, 0);
-}
-
-// Fix: If isAverage, don't divide by 7
-const dailyTargetFallback = isAverage ? weeklyTargetTotal : (weeklyTargetTotal > 0 ? weeklyTargetTotal / 7 : 0);
-
-rows = days.map(day => {
-    // Correct Priority: Specific Daily > Weekly Fallback
-    let target = 0;
-    // Robust lookup: try Number
-    const specificAmount = dailyBudgetMap.get(Number(day.id));
-
-    if (specificAmount !== undefined) {
-        target = specificAmount;
-    } else if (weeklyConfig) {
-        target = dailyTargetFallback;
+        weeklyTargetTotal = Array.from(dailyBudgetMap.values()).reduce((sum, val) => sum + val, 0);
     }
 
-    const dailyR = currentRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);
-    const real = dailyR ? (dailyR.values[indicator.id] || 0) : 0;
-    const dailyPrev = prevRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);
-    const prev = dailyPrev ? (dailyPrev.values[indicator.id] || 0) : 0;
-    totalReal += real; totalTarget += target; totalPrev += prev;
-    return { label: day.label, target, real, prev };
-});
+    // Fix: If isAverage, don't divide by 7
+    const dailyTargetFallback = isAverage ? weeklyTargetTotal : (weeklyTargetTotal > 0 ? weeklyTargetTotal / 7 : 0);
 
-// Fix: Don't overwrite totalReal with Weekly Record if we just calculated it from Dailies
-// const weeklyRec = currentRecords.find((r: RecordData) => r.frequency === 'WEEKLY'); if (weeklyRec) totalReal = weeklyRec.values[indicator.id] || 0;
+    rows = days.map(day => {
+        // Correct Priority: Specific Daily > Weekly Fallback
+        let target = 0;
+        // Robust lookup: try Number
+        const specificAmount = dailyBudgetMap.get(Number(day.id));
 
-// Logic: If we found dailies (rows summed > 0 or currentRecords has daily), keep sum. 
-// Only use weeklyRec if totalReal is 0 AND we have a weekly rec? 
-// Actually, if we are in 'Desglose Diario', showing the sum of days is always more accurate to the view than a stale weekly total.
-// If the user entered Weekly data only, 'days' loop (frequency='DAILY') yields 0 reals. 
-// In that case, rows show 0. Modal shows 0. Total shows Weekly?
-// If rows show 0, Total should probably match. showing 664 in Total while rows are 0 is confusing.
-// So removing the overwrite is correct for consistency. 
-// Use sum of rows.
+        if (specificAmount !== undefined) {
+            target = specificAmount;
+        } else if (weeklyConfig) {
+            target = dailyTargetFallback;
+        }
+
+        const dailyR = currentRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);
+        const real = dailyR ? (dailyR.values[indicator.id] || 0) : 0;
+        const dailyPrev = prevRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);
+        const prev = dailyPrev ? (dailyPrev.values[indicator.id] || 0) : 0;
+        totalReal += real; totalTarget += target; totalPrev += prev;
+        return { label: day.label, target, real, prev };
+    });
+
+    // Fix: Don't overwrite totalReal with Weekly Record if we just calculated it from Dailies
+    // const weeklyRec = currentRecords.find((r: RecordData) => r.frequency === 'WEEKLY'); if (weeklyRec) totalReal = weeklyRec.values[indicator.id] || 0;
+
+    // Logic: If we found dailies (rows summed > 0 or currentRecords has daily), keep sum. 
+    // Only use weeklyRec if totalReal is 0 AND we have a weekly rec? 
+    // Actually, if we are in 'Desglose Diario', showing the sum of days is always more accurate to the view than a stale weekly total.
+    // If the user entered Weekly data only, 'days' loop (frequency='DAILY') yields 0 reals. 
+    // In that case, rows show 0. Modal shows 0. Total shows Weekly?
+    // If rows show 0, Total should probably match. showing 664 in Total while rows are 0 is confusing.
+    // So removing the overwrite is correct for consistency. 
+    // Use sum of rows.
 
 
-const displayMetrics = useMemo(() => {
-    if (viewMode === 'ADVISOR' && !selectedAdvisorId) return [];
+    const displayMetrics = useMemo(() => {
+        if (viewMode === 'ADVISOR' && !selectedAdvisorId) return [];
 
-    let relevantInds = indicators;
-    let position: Position | undefined;
+        let relevantInds = indicators;
+        let position: Position | undefined;
 
-    if (viewMode === 'ADVISOR' && selectedAdvisorId) {
-        const adv = advisors.find(a => a.id === selectedAdvisorId);
-        if (adv) {
-            position = adv.position;
+        if (viewMode === 'ADVISOR' && selectedAdvisorId) {
+            const adv = advisors.find(a => a.id === selectedAdvisorId);
+            if (adv) {
+                position = adv.position;
+                relevantInds = indicators.filter(i => {
+                    if (i.roles && i.roles.length > 0) return i.roles.includes(adv.position);
+                    return (adv.position === Position.LOAN_ADVISOR && (i.appliesTo === AppliesTo.LOAN || i.appliesTo === AppliesTo.ALL)) ||
+                        (adv.position === Position.AFFILIATION_ADVISOR && (i.appliesTo === AppliesTo.AFFILIATION || i.appliesTo === AppliesTo.ALL));
+                });
+            }
+        } else {
             relevantInds = indicators.filter(i => {
+                if (i.roles && i.roles.length > 0) return i.roles.includes('BRANCH');
+                return i.appliesTo === AppliesTo.BRANCH || i.appliesTo === AppliesTo.ALL;
+            });
+        }
+
+        const d = new Date(selectedDate);
+        const dayIndex = d.getDay();
+        const calcWeek = filterType === 'DAY' ? getWeekNumber(d) : selectedWeek;
+        const calcYear = filterType === 'DAY' ? d.getFullYear() : selectedYear;
+
+        const currentWeekNum = getWeekNumber(new Date());
+        let remainingWeeks = 1;
+        if (filterType === 'YEAR') {
+            remainingWeeks = Math.max(1, 52 - currentWeekNum);
+        } else if (filterType === 'TRIMESTER') {
+            const endWeek = selectedQuarter * 13;
+            remainingWeeks = Math.max(1, endWeek - currentWeekNum);
+            if (remainingWeeks < 0) remainingWeeks = 0;
+        }
+
+        return relevantInds.map(ind => {
+            const actual = getAggregatedValue(ind);
+            const targetId = viewMode === 'BRANCH' ? 'BRANCH_GLOBAL' : selectedAdvisorId;
+
+            let target = 0;
+            let isDeficit = false;
+
+            if (showDailyCommitment) {
+                // Calculate adjusted daily target AND deficit status
+                const result = calculateAdjustedDailyCommitment(ind, targetId, position);
+                target = result.value;
+                isDeficit = result.isDeficit;
+            } else {
+                // Standard Calculation
+                target = calculateSpecificTarget(ind.id, targetId, position, filterType, calcYear, calcWeek, selectedQuarter, dayIndex);
+            }
+
+            const percentage = target > 0 ? (actual / target) * 100 : (actual > 0 ? 100 : 0);
+            const remaining = Math.max(0, target - actual);
+
+            let pace = 0;
+            let paceLabel = '';
+
+            // Auto-detect average type if unit is %
+            const isAverage = ind.isAverage || ind.unit === '%';
+
+            if (!showDailyCommitment && !isAverage && (filterType === 'TRIMESTER' || filterType === 'YEAR')) {
+                if (remaining > 0 && remainingWeeks > 0) {
+                    pace = Math.ceil(remaining / remainingWeeks);
+                    paceLabel = `Falta x Semana`;
+                }
+            }
+
+            let remaining80 = 0;
+            if (ind.group === 'TOTAL_SAN' && target > 0) {
+                const target80 = Math.ceil(target * 0.8);
+                remaining80 = Math.max(0, target80 - actual);
+            }
+
+            return { ...ind, actual, target, percentage, remaining, pace, paceLabel, remaining80, isDeficit };
+        }).sort((a, b) => b.percentage - a.percentage);
+    }, [dashboardRecords, indicators, budgets, viewMode, selectedAdvisorId, filterType, selectedYear, selectedWeek, selectedQuarter, selectedDate, showDailyCommitment]);
+
+
+    // --- GROUPED METRICS ---
+    const groupedMetrics = useMemo(() => {
+        const groups: any = {
+            'COLOCACION': { title: 'BANCO', items: [], color: 'border-red-500 shadow-red-50', headerColor: 'text-red-700 bg-red-50' },
+            'CAPTACION': { title: 'CAPTACIÓN', items: [], color: 'border-sky-500 shadow-sky-50', headerColor: 'text-sky-700 bg-sky-50' },
+            'TOTAL_SAN': { title: 'TOTAL SAN', items: [], color: 'border-fuchsia-500 shadow-fuchsia-50', headerColor: 'text-fuchsia-700 bg-fuchsia-50' },
+            'OTHER': { title: 'Otros Indicadores', items: [], color: 'border-gray-300 shadow-sm', headerColor: 'text-gray-700 bg-gray-50' }
+        };
+
+        displayMetrics.forEach(m => {
+            if (m.group && groups[m.group]) {
+                groups[m.group].items.push(m);
+            } else {
+                groups['OTHER'].items.push(m);
+            }
+        });
+
+        return groups;
+    }, [displayMetrics]);
+
+    // --- ADVISOR LIST SUMMARY (Keep existing logic, omitted for brevity in this snippet as it is unchanged logic) ---
+    const advisorSummaryList = useMemo(() => {
+        // ... (Existing advisor summary logic, kept same as previous file)
+        if (viewMode !== 'ADVISOR' || selectedAdvisorId) return [];
+
+        const filteredAdvisors = advisors.filter(a => {
+            if (advisorRoleFilter === 'ALL') return true;
+            return a.position === advisorRoleFilter;
+        });
+
+        const d = new Date(selectedDate);
+        const dayIndex = d.getDay();
+        const calcWeek = filterType === 'DAY' ? getWeekNumber(d) : selectedWeek;
+        const calcYear = filterType === 'DAY' ? d.getFullYear() : selectedYear;
+
+        return filteredAdvisors.map(adv => {
+            const advIndicators = indicators.filter(i => {
                 if (i.roles && i.roles.length > 0) return i.roles.includes(adv.position);
                 return (adv.position === Position.LOAN_ADVISOR && (i.appliesTo === AppliesTo.LOAN || i.appliesTo === AppliesTo.ALL)) ||
                     (adv.position === Position.AFFILIATION_ADVISOR && (i.appliesTo === AppliesTo.AFFILIATION || i.appliesTo === AppliesTo.ALL));
             });
-        }
-    } else {
-        relevantInds = indicators.filter(i => {
-            if (i.roles && i.roles.length > 0) return i.roles.includes('BRANCH');
-            return i.appliesTo === AppliesTo.BRANCH || i.appliesTo === AppliesTo.ALL;
-        });
-    }
 
-    const d = new Date(selectedDate);
-    const dayIndex = d.getDay();
-    const calcWeek = filterType === 'DAY' ? getWeekNumber(d) : selectedWeek;
-    const calcYear = filterType === 'DAY' ? d.getFullYear() : selectedYear;
+            if (advIndicators.length === 0) return { ...adv, percentage: 0, scorePoints: 0 };
 
-    const currentWeekNum = getWeekNumber(new Date());
-    let remainingWeeks = 1;
-    if (filterType === 'YEAR') {
-        remainingWeeks = Math.max(1, 52 - currentWeekNum);
-    } else if (filterType === 'TRIMESTER') {
-        const endWeek = selectedQuarter * 13;
-        remainingWeeks = Math.max(1, endWeek - currentWeekNum);
-        if (remainingWeeks < 0) remainingWeeks = 0;
-    }
+            let totalConfiguredWeight = 0;
+            advIndicators.forEach(ind => {
+                const weight = adv.position === Position.LOAN_ADVISOR ? ind.weightLoan : ind.weightAffiliation;
+                if (weight && weight > 0) totalConfiguredWeight += weight;
+            });
 
-    return relevantInds.map(ind => {
-        const actual = getAggregatedValue(ind);
-        const targetId = viewMode === 'BRANCH' ? 'BRANCH_GLOBAL' : selectedAdvisorId;
+            let totalPoints = 0;
+            let maxPossiblePoints = totalConfiguredWeight > 0 ? totalConfiguredWeight : 100;
+            const defaultWeight = totalConfiguredWeight === 0 ? (100 / advIndicators.length) : 0;
 
-        let target = 0;
-        let isDeficit = false;
+            const advRecords = dashboardRecords.filter(r => r.advisorId === adv.id);
 
-        if (showDailyCommitment) {
-            // Calculate adjusted daily target AND deficit status
-            const result = calculateAdjustedDailyCommitment(ind, targetId, position);
-            target = result.value;
-            isDeficit = result.isDeficit;
-        } else {
-            // Standard Calculation
-            target = calculateSpecificTarget(ind.id, targetId, position, filterType, calcYear, calcWeek, selectedQuarter, dayIndex);
-        }
+            advIndicators.forEach(ind => {
+                // Auto-detect average type if unit is %
+                const isAverage = ind.isAverage || ind.unit === '%';
 
-        const percentage = target > 0 ? (actual / target) * 100 : (actual > 0 ? 100 : 0);
-        const remaining = Math.max(0, target - actual);
+                let actual = 0;
+                if (isAverage && (filterType === 'TRIMESTER' || filterType === 'YEAR')) {
+                    let sum = 0;
+                    let count = 0;
+                    advRecords.forEach(r => {
+                        const val = r.values[ind.id];
+                        if (val !== undefined) { sum += val; count++; }
+                    });
+                    if (count > 0) actual = sum / count;
+                } else {
+                    actual = advRecords.reduce((sum, r) => sum + (r.values[ind.id] || 0), 0);
+                }
 
-        let pace = 0;
-        let paceLabel = '';
+                const target = calculateSpecificTarget(ind.id, adv.id, adv.position, filterType, calcYear, calcWeek, selectedQuarter, dayIndex);
 
-        // Auto-detect average type if unit is %
-        const isAverage = ind.isAverage || ind.unit === '%';
+                let weight = 0;
+                if (totalConfiguredWeight > 0) {
+                    weight = (adv.position === Position.LOAN_ADVISOR ? ind.weightLoan : ind.weightAffiliation) || 0;
+                } else {
+                    weight = defaultWeight;
+                }
 
-        if (!showDailyCommitment && !isAverage && (filterType === 'TRIMESTER' || filterType === 'YEAR')) {
-            if (remaining > 0 && remainingWeeks > 0) {
-                pace = Math.ceil(remaining / remainingWeeks);
-                paceLabel = `Falta x Semana`;
-            }
-        }
+                if (target > 0) {
+                    const compliance = actual / target;
+                    const points = compliance * weight;
+                    totalPoints += points;
+                }
+            });
 
-        let remaining80 = 0;
-        if (ind.group === 'TOTAL_SAN' && target > 0) {
-            const target80 = Math.ceil(target * 0.8);
-            remaining80 = Math.max(0, target80 - actual);
-        }
-
-        return { ...ind, actual, target, percentage, remaining, pace, paceLabel, remaining80, isDeficit };
-    }).sort((a, b) => b.percentage - a.percentage);
-}, [dashboardRecords, indicators, budgets, viewMode, selectedAdvisorId, filterType, selectedYear, selectedWeek, selectedQuarter, selectedDate, showDailyCommitment]);
+            const finalPct = maxPossiblePoints > 0 ? (totalPoints / maxPossiblePoints) * 100 : 0;
+            return { ...adv, percentage: Math.ceil(finalPct), scorePoints: Math.ceil(totalPoints) };
+        }).sort((a, b) => b.percentage - a.percentage);
+    }, [advisors, viewMode, selectedAdvisorId, advisorRoleFilter, dashboardRecords, indicators, budgets, filterType, selectedYear, selectedWeek, selectedQuarter, selectedDate]);
 
 
-// --- GROUPED METRICS ---
-const groupedMetrics = useMemo(() => {
-    const groups: any = {
-        'COLOCACION': { title: 'BANCO', items: [], color: 'border-red-500 shadow-red-50', headerColor: 'text-red-700 bg-red-50' },
-        'CAPTACION': { title: 'CAPTACIÓN', items: [], color: 'border-sky-500 shadow-sky-50', headerColor: 'text-sky-700 bg-sky-50' },
-        'TOTAL_SAN': { title: 'TOTAL SAN', items: [], color: 'border-fuchsia-500 shadow-fuchsia-50', headerColor: 'text-fuchsia-700 bg-fuchsia-50' },
-        'OTHER': { title: 'Otros Indicadores', items: [], color: 'border-gray-300 shadow-sm', headerColor: 'text-gray-700 bg-gray-50' }
+    const years = [2023, 2024, 2025, 2026];
+    const weeks = Array.from({ length: 52 }, (_, i) => i + 1);
+
+    const handlePrint = () => {
+        window.print();
     };
 
-    displayMetrics.forEach(m => {
-        if (m.group && groups[m.group]) {
-            groups[m.group].items.push(m);
-        } else {
-            groups['OTHER'].items.push(m);
-        }
-    });
+    const handleWhatsAppCommitment = () => {
+        const days = ['DOMINGO', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO'];
+        const todayName = days[new Date().getDay()];
 
-    return groups;
-}, [displayMetrics]);
+        let text = `*Compromiso ${todayName}*\n\n`;
 
-// --- ADVISOR LIST SUMMARY (Keep existing logic, omitted for brevity in this snippet as it is unchanged logic) ---
-const advisorSummaryList = useMemo(() => {
-    // ... (Existing advisor summary logic, kept same as previous file)
-    if (viewMode !== 'ADVISOR' || selectedAdvisorId) return [];
+        // Helper to format item
+        const formatItem = (item: any) => {
+            const val = item.unit === '$' ? `$${item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.unit === '%' ? `${item.target.toFixed(0)}%` : `#${item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+            // Use emoji based on deficit status
+            const emoji = item.isDeficit ? '🔴' : '🟢';
+            return `- ${emoji} ${item.name}${".".repeat(Math.max(1, 15 - item.name.length))} *${val}*\n`;
+        };
 
-    const filteredAdvisors = advisors.filter(a => {
-        if (advisorRoleFilter === 'ALL') return true;
-        return a.position === advisorRoleFilter;
-    });
+        // Iterate Groups in Order
+        const groups = ['COLOCACION', 'CAPTACION', 'TOTAL_SAN', 'OTHER'];
+        const groupLabels: any = { 'COLOCACION': '💰 _Colocación_', 'CAPTACION': '💸 _Captación_', 'TOTAL_SAN': '🏦 _Total SAN_', 'OTHER': '📂 _Otros_' };
 
-    const d = new Date(selectedDate);
-    const dayIndex = d.getDay();
-    const calcWeek = filterType === 'DAY' ? getWeekNumber(d) : selectedWeek;
-    const calcYear = filterType === 'DAY' ? d.getFullYear() : selectedYear;
-
-    return filteredAdvisors.map(adv => {
-        const advIndicators = indicators.filter(i => {
-            if (i.roles && i.roles.length > 0) return i.roles.includes(adv.position);
-            return (adv.position === Position.LOAN_ADVISOR && (i.appliesTo === AppliesTo.LOAN || i.appliesTo === AppliesTo.ALL)) ||
-                (adv.position === Position.AFFILIATION_ADVISOR && (i.appliesTo === AppliesTo.AFFILIATION || i.appliesTo === AppliesTo.ALL));
-        });
-
-        if (advIndicators.length === 0) return { ...adv, percentage: 0, scorePoints: 0 };
-
-        let totalConfiguredWeight = 0;
-        advIndicators.forEach(ind => {
-            const weight = adv.position === Position.LOAN_ADVISOR ? ind.weightLoan : ind.weightAffiliation;
-            if (weight && weight > 0) totalConfiguredWeight += weight;
-        });
-
-        let totalPoints = 0;
-        let maxPossiblePoints = totalConfiguredWeight > 0 ? totalConfiguredWeight : 100;
-        const defaultWeight = totalConfiguredWeight === 0 ? (100 / advIndicators.length) : 0;
-
-        const advRecords = dashboardRecords.filter(r => r.advisorId === adv.id);
-
-        advIndicators.forEach(ind => {
-            // Auto-detect average type if unit is %
-            const isAverage = ind.isAverage || ind.unit === '%';
-
-            let actual = 0;
-            if (isAverage && (filterType === 'TRIMESTER' || filterType === 'YEAR')) {
-                let sum = 0;
-                let count = 0;
-                advRecords.forEach(r => {
-                    const val = r.values[ind.id];
-                    if (val !== undefined) { sum += val; count++; }
+        groups.forEach(key => {
+            const group = groupedMetrics[key];
+            if (group && group.items.length > 0) {
+                text += `*${group.title}:*\n\n`;
+                text += `${groupLabels[key] || '_Items_'}\n`;
+                group.items.forEach((item: any) => {
+                    text += formatItem(item);
                 });
-                if (count > 0) actual = sum / count;
-            } else {
-                actual = advRecords.reduce((sum, r) => sum + (r.values[ind.id] || 0), 0);
-            }
-
-            const target = calculateSpecificTarget(ind.id, adv.id, adv.position, filterType, calcYear, calcWeek, selectedQuarter, dayIndex);
-
-            let weight = 0;
-            if (totalConfiguredWeight > 0) {
-                weight = (adv.position === Position.LOAN_ADVISOR ? ind.weightLoan : ind.weightAffiliation) || 0;
-            } else {
-                weight = defaultWeight;
-            }
-
-            if (target > 0) {
-                const compliance = actual / target;
-                const points = compliance * weight;
-                totalPoints += points;
+                text += `\n`;
             }
         });
 
-        const finalPct = maxPossiblePoints > 0 ? (totalPoints / maxPossiblePoints) * 100 : 0;
-        return { ...adv, percentage: Math.ceil(finalPct), scorePoints: Math.ceil(totalPoints) };
-    }).sort((a, b) => b.percentage - a.percentage);
-}, [advisors, viewMode, selectedAdvisorId, advisorRoleFilter, dashboardRecords, indicators, budgets, filterType, selectedYear, selectedWeek, selectedQuarter, selectedDate]);
-
-
-const years = [2023, 2024, 2025, 2026];
-const weeks = Array.from({ length: 52 }, (_, i) => i + 1);
-
-const handlePrint = () => {
-    window.print();
-};
-
-const handleWhatsAppCommitment = () => {
-    const days = ['DOMINGO', 'LUNES', 'MARTES', 'MIÉRCOLES', 'JUEVES', 'VIERNES', 'SÁBADO'];
-    const todayName = days[new Date().getDay()];
-
-    let text = `*Compromiso ${todayName}*\n\n`;
-
-    // Helper to format item
-    const formatItem = (item: any) => {
-        const val = item.unit === '$' ? `$${item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.unit === '%' ? `${item.target.toFixed(0)}%` : `#${item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
-        // Use emoji based on deficit status
-        const emoji = item.isDeficit ? '🔴' : '🟢';
-        return `- ${emoji} ${item.name}${".".repeat(Math.max(1, 15 - item.name.length))} *${val}*\n`;
+        window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
     };
 
-    // Iterate Groups in Order
-    const groups = ['COLOCACION', 'CAPTACION', 'TOTAL_SAN', 'OTHER'];
-    const groupLabels: any = { 'COLOCACION': '💰 _Colocación_', 'CAPTACION': '💸 _Captación_', 'TOTAL_SAN': '🏦 _Total SAN_', 'OTHER': '📂 _Otros_' };
+    const handleSyncBudgets = async () => {
+        if (!confirm('¿Estás seguro de actualizar el presupuesto oficial (Base de Datos) con los compromisos ajustados de hoy? Esto afectará la meta mostrada en la Pizarra Gerencial.')) return;
 
-    groups.forEach(key => {
-        const group = groupedMetrics[key];
-        if (group && group.items.length > 0) {
-            text += `*${group.title}:*\n\n`;
-            text += `${groupLabels[key] || '_Items_'}\n`;
-            group.items.forEach((item: any) => {
-                text += formatItem(item);
-            });
-            text += `\n`;
+        const refDate = filterType === 'DAY' ? new Date(selectedDate) : new Date();
+        const year = refDate.getFullYear();
+        const week = getWeekNumber(refDate);
+        const dayOfWeek = refDate.getDay();
+
+        // Use visible metrics (displayMetrics) as the source
+        const metricsToSync = displayMetrics;
+
+        const newConfigs: BudgetConfig[] = [];
+
+        metricsToSync.forEach(m => {
+            // Re-calculate the Adjusted Target
+            const result = calculateAdjustedDailyCommitment(m, viewMode === 'BRANCH' ? 'BRANCH_GLOBAL' : (selectedAdvisorId || 'BRANCH_GLOBAL'), viewMode === 'ADVISOR' && selectedAdvisorId ? advisors.find(a => a.id === selectedAdvisorId)?.position : undefined);
+
+            if (result.value > 0) {
+                newConfigs.push({
+                    id: '', // Let DB generate or Merge
+                    year: year,
+                    week: week,
+                    // FIX: 'frequency' was wrong. BudgetConfig uses 'periodType'.
+                    periodType: 'DAILY',
+                    dayOfWeek: dayOfWeek,
+                    indicatorId: m.id,
+                    targetId: viewMode === 'BRANCH' ? 'BRANCH_GLOBAL' : (selectedAdvisorId || 'BRANCH_GLOBAL'),
+                    amount: result.value // This is the ADJUSTED amount (Base + Deficit)
+                });
+            }
+        });
+
+        if (newConfigs.length > 0) {
+            await saveBudget(newConfigs, year, week);
+            alert(`Se actualizaron ${newConfigs.length} metas correctamente.`);
+        } else {
+            alert('No hay metas calculadas para sincronizar.');
         }
-    });
-
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank');
-};
-
-const handleSyncBudgets = async () => {
-    if (!confirm('¿Estás seguro de actualizar el presupuesto oficial (Base de Datos) con los compromisos ajustados de hoy? Esto afectará la meta mostrada en la Pizarra Gerencial.')) return;
-
-    const refDate = filterType === 'DAY' ? new Date(selectedDate) : new Date();
-    const year = refDate.getFullYear();
-    const week = getWeekNumber(refDate);
-    const dayOfWeek = refDate.getDay();
-
-    // Use visible metrics (displayMetrics) as the source
-    const metricsToSync = displayMetrics;
-
-    const newConfigs: BudgetConfig[] = [];
-
-    metricsToSync.forEach(m => {
-        // Re-calculate the Adjusted Target
-        const result = calculateAdjustedDailyCommitment(m, viewMode === 'BRANCH' ? 'BRANCH_GLOBAL' : (selectedAdvisorId || 'BRANCH_GLOBAL'), viewMode === 'ADVISOR' && selectedAdvisorId ? advisors.find(a => a.id === selectedAdvisorId)?.position : undefined);
-
-        if (result.value > 0) {
-            newConfigs.push({
-                id: '', // Let DB generate or Merge
-                year: year,
-                week: week,
-                // FIX: 'frequency' was wrong. BudgetConfig uses 'periodType'.
-                periodType: 'DAILY',
-                dayOfWeek: dayOfWeek,
-                indicatorId: m.id,
-                targetId: viewMode === 'BRANCH' ? 'BRANCH_GLOBAL' : (selectedAdvisorId || 'BRANCH_GLOBAL'),
-                amount: result.value // This is the ADJUSTED amount (Base + Deficit)
-            });
-        }
-    });
-
-    if (newConfigs.length > 0) {
-        await saveBudget(newConfigs, year, week);
-        alert(`Se actualizaron ${newConfigs.length} metas correctamente.`);
-    } else {
-        alert('No hay metas calculadas para sincronizar.');
-    }
-};
+    };
 
 
 
-return (
-    <div className="p-4 md:p-6 space-y-6 relative">
-        {/* HEADER */}
-        <div className={`bg-white p-4 rounded-lg shadow space-y-4 print:shadow-none print:border-none ${historyIndicator ? 'print:hidden' : ''}`}>
-            <div className="flex flex-col md:flex-row justify-between items-center gap-4">
-                <div className="flex-1">
-                    <h1 className="text-2xl font-bold text-bank-900">Equipo BAZ</h1>
-                    <p className="text-sm text-gray-500">Dashboard de Resultados</p>
+    return (
+        <div className="p-4 md:p-6 space-y-6 relative">
+            {/* HEADER */}
+            <div className={`bg-white p-4 rounded-lg shadow space-y-4 print:shadow-none print:border-none ${historyIndicator ? 'print:hidden' : ''}`}>
+                <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                    <div className="flex-1">
+                        <h1 className="text-2xl font-bold text-bank-900">Equipo BAZ</h1>
+                        <p className="text-sm text-gray-500">Dashboard de Resultados</p>
+                    </div>
+
+                    {/* REAL TIME CLOCK */}
+                    <div className="hidden md:flex flex-col items-end px-4 border-r border-gray-100 mr-4">
+                        <div className="text-2xl font-bold text-bank-800 tabular-nums">
+                            {currentTime.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                        <div className="text-xs text-gray-500 capitalize">
+                            {currentTime.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+                        </div>
+                    </div>
+
+                    <div className="flex gap-2 flex-wrap print:hidden justify-end">
+                        <button
+                            onClick={() => setShowDailyCommitment(!showDailyCommitment)}
+                            className={`flex items-center font-bold py-2 px-4 rounded shadow transition-colors ${showDailyCommitment ? 'bg-orange-500 text-white hover:bg-orange-600' : 'bg-white text-gray-700 border hover:bg-gray-50'}`}
+                            title={showDailyCommitment ? "Ver Metas Estándar" : "Ver Compromiso del Día (Incluye déficit)"}
+                        >
+                            <Target className="mr-2 h-5 w-5" />
+                            {showDailyCommitment ? 'Meta Estándar' : 'Compromisos Hoy'}
+                        </button>
+
+                        {showDailyCommitment && (
+                            <>
+                                <button
+                                    onClick={handleWhatsAppCommitment}
+                                    className="flex items-center bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded shadow transition-colors"
+                                    title="Compartir Compromisos por WhatsApp"
+                                >
+                                    <MessageCircle className="mr-2 h-5 w-5" />
+                                    WhatsApp
+                                </button>
+
+                            </>
+                        )}
+
+                        <button
+                            onClick={() => setShowMute(true)}
+                            className="flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-2 px-4 rounded shadow transition-colors"
+                        >
+                            <Ghost className="mr-2 h-5 w-5" />
+                            Mudos
+                        </button>
+                        <button
+                            onClick={() => setShowRanking(true)}
+                            className="flex items-center bg-yellow-400 hover:bg-yellow-500 text-white font-bold py-2 px-4 rounded shadow transition-colors"
+                        >
+                            <Trophy className="mr-2 h-5 w-5" />
+                            Ranking
+                        </button>
+                        <button
+                            onClick={handlePrint}
+                            className="flex items-center bg-bank-600 hover:bg-bank-700 text-white font-bold py-2 px-4 rounded shadow transition-colors"
+                            title="Imprimir Dashboard"
+                        >
+                            <Printer className="mr-2 h-5 w-5" />
+                            Imprimir
+                        </button>
+                    </div>
                 </div>
 
-                {/* REAL TIME CLOCK */}
-                <div className="hidden md:flex flex-col items-end px-4 border-r border-gray-100 mr-4">
-                    <div className="text-2xl font-bold text-bank-800 tabular-nums">
-                        {currentTime.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' })}
+                {/* FILTERS */}
+                <div className="flex flex-col md:flex-row gap-4 border-t pt-4 flex-wrap print:hidden">
+                    {/* ... Existing Filters code ... */}
+                    <div className="flex-1 min-w-[140px]">
+                        <label className="block text-xs font-semibold text-gray-500 mb-1">Periodo</label>
+                        <div className="flex items-center border rounded px-2 bg-gray-50">
+                            <Filter size={16} className="text-gray-500 mr-2" />
+                            <select className="bg-transparent py-2 w-full outline-none text-sm" value={filterType} onChange={e => setFilterType(e.target.value as any)}>
+                                <option value="DAY">Día Específico</option>
+                                <option value="WEEK">Semana</option>
+                                <option value="TRIMESTER">Trimestre</option>
+                                <option value="YEAR">Año</option>
+                            </select>
+                        </div>
                     </div>
-                    <div className="text-xs text-gray-500 capitalize">
-                        {currentTime.toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' })}
+
+                    {filterType === 'DAY' && (
+                        <div className="flex-1 min-w-[140px]">
+                            <label className="block text-xs font-semibold text-gray-500 mb-1">Fecha</label>
+                            <input type="date" className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} />
+                        </div>
+                    )}
+
+                    {(filterType === 'WEEK' || filterType === 'TRIMESTER' || filterType === 'YEAR') && (
+                        <div className="flex-1 min-w-[100px]">
+                            <label className="block text-xs font-semibold text-gray-500 mb-1">Año</label>
+                            <select className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))}>
+                                {years.map(y => <option key={y} value={y}>{y}</option>)}
+                            </select>
+                        </div>
+                    )}
+
+                    {filterType === 'WEEK' && (
+                        <div className="flex-1 min-w-[120px]">
+                            <label className="block text-xs font-semibold text-gray-500 mb-1">Semana</label>
+                            <select className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedWeek} onChange={e => setSelectedWeek(Number(e.target.value))}>
+                                {weeks.map(w => <option key={w} value={w}>Semana {w}</option>)}
+                            </select>
+                        </div>
+                    )}
+
+                    {filterType === 'TRIMESTER' && (
+                        <div className="flex-1 min-w-[120px]">
+                            <label className="block text-xs font-semibold text-gray-500 mb-1">Trimestre</label>
+                            <select className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedQuarter} onChange={e => setSelectedQuarter(Number(e.target.value))}>
+                                <option value={1}>Q1 (Sem 1-13)</option>
+                                <option value={2}>Q2 (Sem 14-26)</option>
+                                <option value={3}>Q3 (Sem 27-39)</option>
+                                <option value={4}>Q4 (Sem 40-52)</option>
+                            </select>
+                        </div>
+                    )}
+
+                    <div className="flex-1 min-w-[150px]">
+                        <label className="block text-xs font-semibold text-gray-500 mb-1">Vista</label>
+                        <select className="w-full border rounded p-2 text-sm bg-gray-50 font-medium text-bank-800" value={viewMode} onChange={e => { setViewMode(e.target.value as any); setSelectedAdvisorId(''); }}>
+                            <option value="BRANCH">Sucursal</option>
+                            <option value="ADVISOR">Colaborador</option>
+                        </select>
                     </div>
-                </div>
 
-                <div className="flex gap-2 flex-wrap print:hidden justify-end">
-                    <button
-                        onClick={() => setShowDailyCommitment(!showDailyCommitment)}
-                        className={`flex items-center font-bold py-2 px-4 rounded shadow transition-colors ${showDailyCommitment ? 'bg-orange-500 text-white hover:bg-orange-600' : 'bg-white text-gray-700 border hover:bg-gray-50'}`}
-                        title={showDailyCommitment ? "Ver Metas Estándar" : "Ver Compromiso del Día (Incluye déficit)"}
-                    >
-                        <Target className="mr-2 h-5 w-5" />
-                        {showDailyCommitment ? 'Meta Estándar' : 'Compromisos Hoy'}
-                    </button>
-
-                    {showDailyCommitment && (
+                    {viewMode === 'ADVISOR' && (
                         <>
-                            <button
-                                onClick={handleWhatsAppCommitment}
-                                className="flex items-center bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded shadow transition-colors"
-                                title="Compartir Compromisos por WhatsApp"
-                            >
-                                <MessageCircle className="mr-2 h-5 w-5" />
-                                WhatsApp
-                            </button>
-
+                            <div className="flex-1 min-w-[150px]">
+                                <label className="block text-xs font-semibold text-gray-500 mb-1">Puesto</label>
+                                <select className="w-full border rounded p-2 text-sm bg-gray-50" value={advisorRoleFilter} onChange={e => setAdvisorRoleFilter(e.target.value as any)} disabled={!!selectedAdvisorId}>
+                                    <option value="ALL">Todos los Puestos</option>
+                                    <option value={Position.LOAN_ADVISOR}>{Position.LOAN_ADVISOR}</option>
+                                    <option value={Position.AFFILIATION_ADVISOR}>{Position.AFFILIATION_ADVISOR}</option>
+                                </select>
+                            </div>
+                            <div className="flex-1 min-w-[150px]">
+                                <label className="block text-xs font-semibold text-gray-500 mb-1">Colaborador</label>
+                                <select className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedAdvisorId} onChange={e => setSelectedAdvisorId(e.target.value)}>
+                                    <option value="">-- Ver Todos (Resumen) --</option>
+                                    {advisors.filter(a => advisorRoleFilter === 'ALL' || a.position === advisorRoleFilter).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                                </select>
+                            </div>
                         </>
                     )}
+                </div>
 
-                    <button
-                        onClick={() => setShowMute(true)}
-                        className="flex items-center bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold py-2 px-4 rounded shadow transition-colors"
-                    >
-                        <Ghost className="mr-2 h-5 w-5" />
-                        Mudos
-                    </button>
-                    <button
-                        onClick={() => setShowRanking(true)}
-                        className="flex items-center bg-yellow-400 hover:bg-yellow-500 text-white font-bold py-2 px-4 rounded shadow transition-colors"
-                    >
-                        <Trophy className="mr-2 h-5 w-5" />
-                        Ranking
-                    </button>
-                    <button
-                        onClick={handlePrint}
-                        className="flex items-center bg-bank-600 hover:bg-bank-700 text-white font-bold py-2 px-4 rounded shadow transition-colors"
-                        title="Imprimir Dashboard"
-                    >
-                        <Printer className="mr-2 h-5 w-5" />
-                        Imprimir
-                    </button>
+                {/* PRINT HEADER */}
+                <div className="hidden print:block text-center border-b pb-4 mb-4">
+                    <h2 className="text-xl font-bold">Reporte de Resultados: {filterType === 'WEEK' ? `Semana ${selectedWeek}` : filterType === 'DAY' ? selectedDate : `Año ${selectedYear}`}</h2>
+                    <div className="text-sm text-gray-500 mt-1">Generado: {currentTime.toLocaleString()}</div>
+                    {showDailyCommitment && <h3 className="text-lg font-bold text-orange-600">COMPROMISOS DEL DÍA (AJUSTADO)</h3>}
                 </div>
             </div>
 
-            {/* FILTERS */}
-            <div className="flex flex-col md:flex-row gap-4 border-t pt-4 flex-wrap print:hidden">
-                {/* ... Existing Filters code ... */}
-                <div className="flex-1 min-w-[140px]">
-                    <label className="block text-xs font-semibold text-gray-500 mb-1">Periodo</label>
-                    <div className="flex items-center border rounded px-2 bg-gray-50">
-                        <Filter size={16} className="text-gray-500 mr-2" />
-                        <select className="bg-transparent py-2 w-full outline-none text-sm" value={filterType} onChange={e => setFilterType(e.target.value as any)}>
-                            <option value="DAY">Día Específico</option>
-                            <option value="WEEK">Semana</option>
-                            <option value="TRIMESTER">Trimestre</option>
-                            <option value="YEAR">Año</option>
-                        </select>
-                    </div>
-                </div>
-
-                {filterType === 'DAY' && (
-                    <div className="flex-1 min-w-[140px]">
-                        <label className="block text-xs font-semibold text-gray-500 mb-1">Fecha</label>
-                        <input type="date" className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedDate} onChange={e => setSelectedDate(e.target.value)} />
-                    </div>
-                )}
-
-                {(filterType === 'WEEK' || filterType === 'TRIMESTER' || filterType === 'YEAR') && (
-                    <div className="flex-1 min-w-[100px]">
-                        <label className="block text-xs font-semibold text-gray-500 mb-1">Año</label>
-                        <select className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedYear} onChange={e => setSelectedYear(Number(e.target.value))}>
-                            {years.map(y => <option key={y} value={y}>{y}</option>)}
-                        </select>
-                    </div>
-                )}
-
-                {filterType === 'WEEK' && (
-                    <div className="flex-1 min-w-[120px]">
-                        <label className="block text-xs font-semibold text-gray-500 mb-1">Semana</label>
-                        <select className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedWeek} onChange={e => setSelectedWeek(Number(e.target.value))}>
-                            {weeks.map(w => <option key={w} value={w}>Semana {w}</option>)}
-                        </select>
-                    </div>
-                )}
-
-                {filterType === 'TRIMESTER' && (
-                    <div className="flex-1 min-w-[120px]">
-                        <label className="block text-xs font-semibold text-gray-500 mb-1">Trimestre</label>
-                        <select className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedQuarter} onChange={e => setSelectedQuarter(Number(e.target.value))}>
-                            <option value={1}>Q1 (Sem 1-13)</option>
-                            <option value={2}>Q2 (Sem 14-26)</option>
-                            <option value={3}>Q3 (Sem 27-39)</option>
-                            <option value={4}>Q4 (Sem 40-52)</option>
-                        </select>
-                    </div>
-                )}
-
-                <div className="flex-1 min-w-[150px]">
-                    <label className="block text-xs font-semibold text-gray-500 mb-1">Vista</label>
-                    <select className="w-full border rounded p-2 text-sm bg-gray-50 font-medium text-bank-800" value={viewMode} onChange={e => { setViewMode(e.target.value as any); setSelectedAdvisorId(''); }}>
-                        <option value="BRANCH">Sucursal</option>
-                        <option value="ADVISOR">Colaborador</option>
-                    </select>
-                </div>
-
-                {viewMode === 'ADVISOR' && (
-                    <>
-                        <div className="flex-1 min-w-[150px]">
-                            <label className="block text-xs font-semibold text-gray-500 mb-1">Puesto</label>
-                            <select className="w-full border rounded p-2 text-sm bg-gray-50" value={advisorRoleFilter} onChange={e => setAdvisorRoleFilter(e.target.value as any)} disabled={!!selectedAdvisorId}>
-                                <option value="ALL">Todos los Puestos</option>
-                                <option value={Position.LOAN_ADVISOR}>{Position.LOAN_ADVISOR}</option>
-                                <option value={Position.AFFILIATION_ADVISOR}>{Position.AFFILIATION_ADVISOR}</option>
-                            </select>
-                        </div>
-                        <div className="flex-1 min-w-[150px]">
-                            <label className="block text-xs font-semibold text-gray-500 mb-1">Colaborador</label>
-                            <select className="w-full border rounded p-2 text-sm bg-gray-50" value={selectedAdvisorId} onChange={e => setSelectedAdvisorId(e.target.value)}>
-                                <option value="">-- Ver Todos (Resumen) --</option>
-                                {advisors.filter(a => advisorRoleFilter === 'ALL' || a.position === advisorRoleFilter).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
-                            </select>
-                        </div>
-                    </>
-                )}
-            </div>
-
-            {/* PRINT HEADER */}
-            <div className="hidden print:block text-center border-b pb-4 mb-4">
-                <h2 className="text-xl font-bold">Reporte de Resultados: {filterType === 'WEEK' ? `Semana ${selectedWeek}` : filterType === 'DAY' ? selectedDate : `Año ${selectedYear}`}</h2>
-                <div className="text-sm text-gray-500 mt-1">Generado: {currentTime.toLocaleString()}</div>
-                {showDailyCommitment && <h3 className="text-lg font-bold text-orange-600">COMPROMISOS DEL DÍA (AJUSTADO)</h3>}
-            </div>
-        </div>
-
-        {/* ADVISOR DIRECTORY */}
-        {
-            viewMode === 'ADVISOR' && !selectedAdvisorId && (
-                <div className={`animate-fade-in-up ${historyIndicator ? 'print:hidden' : ''}`}>
-                    {/* Same Advisor Directory code... */}
-                    <h3 className="text-lg font-bold text-gray-700 mb-4 flex items-center print:hidden">
-                        <Users className="mr-2" /> Directorio de Asesores
-                    </h3>
-                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 print:grid-cols-3">
-                        {advisorSummaryList.map(adv => (
-                            <div key={adv.id} onClick={() => setSelectedAdvisorId(adv.id)} className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 cursor-pointer hover:shadow-md hover:border-bank-400 transition-all group relative overflow-hidden break-inside-avoid">
-                                <div className={`absolute top-0 left-0 w-2 h-full ${adv.position === Position.LOAN_ADVISOR ? 'bg-blue-500' : 'bg-emerald-500'}`}></div>
-                                <div className="ml-3">
-                                    <div className="flex items-center gap-3 mb-2">
-                                        <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-gray-100 flex-shrink-0">
-                                            {adv.photoUrl ? <img src={adv.photoUrl} alt={adv.name} className="w-full h-full object-cover" /> : <div className="w-full h-full bg-gray-200 flex items-center justify-center text-gray-400"><Briefcase size={20} /></div>}
+            {/* ADVISOR DIRECTORY */}
+            {
+                viewMode === 'ADVISOR' && !selectedAdvisorId && (
+                    <div className={`animate-fade-in-up ${historyIndicator ? 'print:hidden' : ''}`}>
+                        {/* Same Advisor Directory code... */}
+                        <h3 className="text-lg font-bold text-gray-700 mb-4 flex items-center print:hidden">
+                            <Users className="mr-2" /> Directorio de Asesores
+                        </h3>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 print:grid-cols-3">
+                            {advisorSummaryList.map(adv => (
+                                <div key={adv.id} onClick={() => setSelectedAdvisorId(adv.id)} className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 cursor-pointer hover:shadow-md hover:border-bank-400 transition-all group relative overflow-hidden break-inside-avoid">
+                                    <div className={`absolute top-0 left-0 w-2 h-full ${adv.position === Position.LOAN_ADVISOR ? 'bg-blue-500' : 'bg-emerald-500'}`}></div>
+                                    <div className="ml-3">
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <div className="w-12 h-12 rounded-full overflow-hidden border-2 border-gray-100 flex-shrink-0">
+                                                {adv.photoUrl ? <img src={adv.photoUrl} alt={adv.name} className="w-full h-full object-cover" /> : <div className="w-full h-full bg-gray-200 flex items-center justify-center text-gray-400"><Briefcase size={20} /></div>}
+                                            </div>
+                                            <div>
+                                                <h4 className="font-bold text-gray-900 leading-tight group-hover:text-bank-600 transition-colors">{adv.name}</h4>
+                                                <span className={`text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${adv.position === Position.LOAN_ADVISOR ? 'bg-blue-100 text-blue-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                                                    {adv.position === Position.LOAN_ADVISOR ? 'Préstamos' : 'Afiliación'}
+                                                </span>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <h4 className="font-bold text-gray-900 leading-tight group-hover:text-bank-600 transition-colors">{adv.name}</h4>
-                                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full uppercase tracking-wider ${adv.position === Position.LOAN_ADVISOR ? 'bg-blue-100 text-blue-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                                                {adv.position === Position.LOAN_ADVISOR ? 'Préstamos' : 'Afiliación'}
-                                            </span>
-                                        </div>
-                                    </div>
-                                    <div className="mt-4">
-                                        <div className="flex justify-between items-center mb-1">
-                                            <span className="text-xs text-gray-500">Puntaje</span>
-                                            <span className={`text-xl font-bold ${adv.percentage >= 100 ? 'text-green-600' : adv.percentage >= 80 ? 'text-yellow-600' : 'text-red-600'}`}>
-                                                {adv.scorePoints?.toFixed(0) || 0} pts
-                                            </span>
-                                        </div>
-                                        <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
-                                            <div className={`h-2 rounded-full ${adv.percentage >= 100 ? 'bg-green-500' : adv.percentage >= 80 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${Math.min(adv.percentage, 100)}%` }}></div>
+                                        <div className="mt-4">
+                                            <div className="flex justify-between items-center mb-1">
+                                                <span className="text-xs text-gray-500">Puntaje</span>
+                                                <span className={`text-xl font-bold ${adv.percentage >= 100 ? 'text-green-600' : adv.percentage >= 80 ? 'text-yellow-600' : 'text-red-600'}`}>
+                                                    {adv.scorePoints?.toFixed(0) || 0} pts
+                                                </span>
+                                            </div>
+                                            <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
+                                                <div className={`h-2 rounded-full ${adv.percentage >= 100 ? 'bg-green-500' : adv.percentage >= 80 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${Math.min(adv.percentage, 100)}%` }}></div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )
-        }
-
-        {/* METRICS & CHARTS */}
-        {
-            ((viewMode === 'ADVISOR' && selectedAdvisorId) || viewMode === 'BRANCH') && (
-                <div className={historyIndicator ? 'print:hidden' : ''}>
-                    {viewMode === 'ADVISOR' && selectedAdvisorId && (
-                        <button onClick={() => setSelectedAdvisorId('')} className="flex items-center text-bank-600 font-semibold hover:underline mb-2 print:hidden">
-                            <ChevronLeft className="w-5 h-5" /> Volver a la lista de asesores
-                        </button>
-                    )}
-
-                    {showDailyCommitment && (
-                        <div className="bg-orange-50 border-l-4 border-orange-500 p-4 mb-6 rounded-r-lg shadow-sm">
-                            <div className="flex">
-                                <div className="flex-shrink-0"><Target className="h-5 w-5 text-orange-500" /></div>
-                                <div className="ml-3">
-                                    <p className="text-sm font-bold text-orange-800 uppercase tracking-wide">Vista: Compromisos del Día Ajustados</p>
-                                    <p className="text-xs text-orange-700 mt-1">
-                                        Los objetivos mostrados incluyen el déficit acumulado desde el Lunes hasta ayer.
-                                        <br />Calculado: (Meta Acumulada - Real Acumulado) + Meta Hoy.
-                                    </p>
-                                </div>
-                            </div>
+                            ))}
                         </div>
-                    )}
+                    </div>
+                )
+            }
 
-                    {/* GROUPED INDICATORS RENDER */}
-                    {['COLOCACION', 'CAPTACION', 'TOTAL_SAN', 'OTHER'].map(groupKey => {
-                        const group = groupedMetrics[groupKey];
-                        if (group.items.length === 0) return null;
+            {/* METRICS & CHARTS */}
+            {
+                ((viewMode === 'ADVISOR' && selectedAdvisorId) || viewMode === 'BRANCH') && (
+                    <div className={historyIndicator ? 'print:hidden' : ''}>
+                        {viewMode === 'ADVISOR' && selectedAdvisorId && (
+                            <button onClick={() => setSelectedAdvisorId('')} className="flex items-center text-bank-600 font-semibold hover:underline mb-2 print:hidden">
+                                <ChevronLeft className="w-5 h-5" /> Volver a la lista de asesores
+                            </button>
+                        )}
 
-                        return (
-                            <div key={groupKey} className="mb-8">
-                                <div className={`flex items-center justify-between mb-4 px-3 py-2 rounded-lg ${group.headerColor}`}>
-                                    <h3 className="font-bold text-sm uppercase tracking-wider">{group.title}</h3>
-                                    <span className="text-xs font-bold opacity-70">{group.items.length} Indicadores</span>
+                        {showDailyCommitment && (
+                            <div className="bg-orange-50 border-l-4 border-orange-500 p-4 mb-6 rounded-r-lg shadow-sm">
+                                <div className="flex">
+                                    <div className="flex-shrink-0"><Target className="h-5 w-5 text-orange-500" /></div>
+                                    <div className="ml-3">
+                                        <p className="text-sm font-bold text-orange-800 uppercase tracking-wide">Vista: Compromisos del Día Ajustados</p>
+                                        <p className="text-xs text-orange-700 mt-1">
+                                            Los objetivos mostrados incluyen el déficit acumulado desde el Lunes hasta ayer.
+                                            <br />Calculado: (Meta Acumulada - Real Acumulado) + Meta Hoy.
+                                        </p>
+                                    </div>
                                 </div>
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-fade-in-up print:grid-cols-4">
-                                    {group.items.map((item: any) => (
-                                        <div key={item.id} onClick={() => setHistoryIndicator(item)} className={`bg-white rounded-lg shadow p-4 relative overflow-hidden transition-all hover:scale-105 cursor-pointer hover:shadow-lg group break-inside-avoid border-l-4 ${group.color}`}>
+                            </div>
+                        )}
 
-                                            <div className="flex justify-between items-start mb-2">
-                                                <h3 className="text-sm font-medium text-gray-500 truncate pr-4">{item.name}</h3>
-                                                {!showDailyCommitment && (
-                                                    <span className={`text-xs font-bold px-2 py-1 rounded-full ${item.percentage >= 100 ? 'bg-green-100 text-green-800' : item.percentage >= 80 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>
-                                                        {item.percentage.toFixed(0)}%
-                                                    </span>
-                                                )}
-                                                {showDailyCommitment && (
-                                                    <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-orange-100 text-orange-800 border border-orange-200 uppercase">
-                                                        Meta Hoy
-                                                    </span>
-                                                )}
-                                            </div>
+                        {/* GROUPED INDICATORS RENDER */}
+                        {['COLOCACION', 'CAPTACION', 'TOTAL_SAN', 'OTHER'].map(groupKey => {
+                            const group = groupedMetrics[groupKey];
+                            if (group.items.length === 0) return null;
 
-                                            <div className="flex items-end space-x-2 mb-3">
-                                                {/* In Daily Commitment Mode, The Main Number is TARGET, not Actual */}
-                                                {showDailyCommitment ? (
-                                                    <>
-                                                        <span className={`text-2xl font-bold ${item.isDeficit ? 'text-red-600' : 'text-green-600'}`}>
-                                                            {item.unit === '$' ? `$${item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                                                            {item.unit === '%' ? '%' : ''}
-                                                        </span>
-                                                        <span className="text-xs text-gray-400 mb-1">
-                                                            (Compromiso)
-                                                        </span>
-                                                    </>
-                                                ) : (
-                                                    <>
-                                                        <span className="text-2xl font-bold text-gray-900">
-                                                            {item.unit === '$' ? `$${item.actual.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.actual.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                                                            {item.unit === '%' ? '%' : ''}
-                                                        </span>
-                                                        <span className="text-xs text-gray-400 mb-1">
-                                                            / {item.unit === '$' ? `$${item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                                                        </span>
-                                                    </>
-                                                )}
-                                            </div>
+                            return (
+                                <div key={groupKey} className="mb-8">
+                                    <div className={`flex items-center justify-between mb-4 px-3 py-2 rounded-lg ${group.headerColor}`}>
+                                        <h3 className="font-bold text-sm uppercase tracking-wider">{group.title}</h3>
+                                        <span className="text-xs font-bold opacity-70">{group.items.length} Indicadores</span>
+                                    </div>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 animate-fade-in-up print:grid-cols-4">
+                                        {group.items.map((item: any) => (
+                                            <div key={item.id} onClick={() => setHistoryIndicator(item)} className={`bg-white rounded-lg shadow p-4 relative overflow-hidden transition-all hover:scale-105 cursor-pointer hover:shadow-lg group break-inside-avoid border-l-4 ${group.color}`}>
 
-                                            {!showDailyCommitment && (
-                                                <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
-                                                    <div className={`h-2 rounded-full ${item.percentage >= 100 ? 'bg-green-500' : item.percentage >= 80 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${Math.min(item.percentage, 100)}%` }}></div>
-                                                </div>
-                                            )}
-
-                                            {showDailyCommitment && (
-                                                <div className="text-xs border-t pt-2 bg-gray-50 -mx-4 -mb-4 px-4 pb-2 mt-auto">
-                                                    <div className="flex justify-between items-center mb-1">
-                                                        <span className="text-gray-500">Real Hoy/Acum:</span>
-                                                        <span className="font-bold text-blue-600">
-                                                            {item.unit === '$' ? `$${item.actual.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.actual.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                <div className="flex justify-between items-start mb-2">
+                                                    <h3 className="text-sm font-medium text-gray-500 truncate pr-4">{item.name}</h3>
+                                                    {!showDailyCommitment && (
+                                                        <span className={`text-xs font-bold px-2 py-1 rounded-full ${item.percentage >= 100 ? 'bg-green-100 text-green-800' : item.percentage >= 80 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'}`}>
+                                                            {item.percentage.toFixed(0)}%
                                                         </span>
-                                                    </div>
-                                                    <div className="flex justify-between items-center bg-red-50 p-1 -mx-1 rounded">
-                                                        <span className="text-red-700 font-bold">Falta:</span>
-                                                        <span className="font-bold text-red-700">
-                                                            {item.unit === '$' ? `$${Math.max(0, item.target - item.actual).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : Math.max(0, item.target - item.actual).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                    )}
+                                                    {showDailyCommitment && (
+                                                        <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-orange-100 text-orange-800 border border-orange-200 uppercase">
+                                                            Meta Hoy
                                                         </span>
-                                                    </div>
-                                                </div>
-                                            )}
-
-                                            {!showDailyCommitment && (
-                                                <div className="grid grid-cols-2 gap-2 text-xs border-t pt-2 bg-gray-50 -mx-4 -mb-4 px-4 pb-2 mt-auto">
-                                                    <div>
-                                                        <span className="text-gray-400 block mb-0.5 font-medium">Falta Total</span>
-                                                        <span className={`font-bold text-sm ${item.remaining > 0 ? 'text-red-600' : 'text-green-600'}`}>
-                                                            {item.remaining > 0 ? (
-                                                                <>
-                                                                    {item.unit === '$' ? `$${item.remaining.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.remaining.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                                                                    {item.unit === '%' ? ' pts' : ''}
-                                                                </>
-                                                            ) : '¡Logrado!'}
-                                                        </span>
-                                                    </div>
-                                                    <div className="text-right">
-                                                        {item.pace > 0 ? (
-                                                            <>
-                                                                <span className="text-gray-400 block mb-0.5 font-medium">{item.paceLabel}</span>
-                                                                <span className="font-bold text-red-600 text-sm">
-                                                                    {item.unit === '$' ? `$${item.pace.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.pace.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                                                                </span>
-                                                            </>
-                                                        ) : (
-                                                            <span className="text-gray-300 italic flex h-full items-end justify-end">---</span>
-                                                        )}
-                                                    </div>
-                                                    {groupKey === 'TOTAL_SAN' && (
-                                                        <div className="col-span-2 border-t mt-1 pt-1 text-center">
-                                                            <span className="text-[10px] text-gray-400 mr-1">Falta para 80%:</span>
-                                                            <span className={`text-[10px] font-bold ${item.remaining80 > 0 ? 'text-orange-600' : 'text-green-600'}`}>
-                                                                {item.remaining80 > 0 ? (item.unit === '$' ? `$${item.remaining80.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.remaining80.toLocaleString(undefined, { maximumFractionDigits: 0 })) : '¡Cumplido!'}
-                                                            </span>
-                                                        </div>
                                                     )}
                                                 </div>
-                                            )}
-                                        </div>
-                                    ))}
+
+                                                <div className="flex items-end space-x-2 mb-3">
+                                                    {/* In Daily Commitment Mode, The Main Number is TARGET, not Actual */}
+                                                    {showDailyCommitment ? (
+                                                        <>
+                                                            <span className={`text-2xl font-bold ${item.isDeficit ? 'text-red-600' : 'text-green-600'}`}>
+                                                                {item.unit === '$' ? `$${item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                                {item.unit === '%' ? '%' : ''}
+                                                            </span>
+                                                            <span className="text-xs text-gray-400 mb-1">
+                                                                (Compromiso)
+                                                            </span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <span className="text-2xl font-bold text-gray-900">
+                                                                {item.unit === '$' ? `$${item.actual.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.actual.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                                {item.unit === '%' ? '%' : ''}
+                                                            </span>
+                                                            <span className="text-xs text-gray-400 mb-1">
+                                                                / {item.unit === '$' ? `$${item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.target.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                            </span>
+                                                        </>
+                                                    )}
+                                                </div>
+
+                                                {!showDailyCommitment && (
+                                                    <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
+                                                        <div className={`h-2 rounded-full ${item.percentage >= 100 ? 'bg-green-500' : item.percentage >= 80 ? 'bg-yellow-500' : 'bg-red-500'}`} style={{ width: `${Math.min(item.percentage, 100)}%` }}></div>
+                                                    </div>
+                                                )}
+
+                                                {showDailyCommitment && (
+                                                    <div className="text-xs border-t pt-2 bg-gray-50 -mx-4 -mb-4 px-4 pb-2 mt-auto">
+                                                        <div className="flex justify-between items-center mb-1">
+                                                            <span className="text-gray-500">Real Hoy/Acum:</span>
+                                                            <span className="font-bold text-blue-600">
+                                                                {item.unit === '$' ? `$${item.actual.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.actual.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                            </span>
+                                                        </div>
+                                                        <div className="flex justify-between items-center bg-red-50 p-1 -mx-1 rounded">
+                                                            <span className="text-red-700 font-bold">Falta:</span>
+                                                            <span className="font-bold text-red-700">
+                                                                {item.unit === '$' ? `$${Math.max(0, item.target - item.actual).toLocaleString(undefined, { maximumFractionDigits: 0 })}` : Math.max(0, item.target - item.actual).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                            </span>
+                                                        </div>
+                                                    </div>
+                                                )}
+
+                                                {!showDailyCommitment && (
+                                                    <div className="grid grid-cols-2 gap-2 text-xs border-t pt-2 bg-gray-50 -mx-4 -mb-4 px-4 pb-2 mt-auto">
+                                                        <div>
+                                                            <span className="text-gray-400 block mb-0.5 font-medium">Falta Total</span>
+                                                            <span className={`font-bold text-sm ${item.remaining > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                                                                {item.remaining > 0 ? (
+                                                                    <>
+                                                                        {item.unit === '$' ? `$${item.remaining.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.remaining.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                                        {item.unit === '%' ? ' pts' : ''}
+                                                                    </>
+                                                                ) : '¡Logrado!'}
+                                                            </span>
+                                                        </div>
+                                                        <div className="text-right">
+                                                            {item.pace > 0 ? (
+                                                                <>
+                                                                    <span className="text-gray-400 block mb-0.5 font-medium">{item.paceLabel}</span>
+                                                                    <span className="font-bold text-red-600 text-sm">
+                                                                        {item.unit === '$' ? `$${item.pace.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.pace.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                                                                    </span>
+                                                                </>
+                                                            ) : (
+                                                                <span className="text-gray-300 italic flex h-full items-end justify-end">---</span>
+                                                            )}
+                                                        </div>
+                                                        {groupKey === 'TOTAL_SAN' && (
+                                                            <div className="col-span-2 border-t mt-1 pt-1 text-center">
+                                                                <span className="text-[10px] text-gray-400 mr-1">Falta para 80%:</span>
+                                                                <span className={`text-[10px] font-bold ${item.remaining80 > 0 ? 'text-orange-600' : 'text-green-600'}`}>
+                                                                    {item.remaining80 > 0 ? (item.unit === '$' ? `$${item.remaining80.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : item.remaining80.toLocaleString(undefined, { maximumFractionDigits: 0 })) : '¡Cumplido!'}
+                                                                </span>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            );
+                        })}
+
+                        {/* CHARTS (Only if not in Daily Commitment Mode) */}
+                        {!showDailyCommitment && (
+                            <div className="bg-white p-6 rounded-lg shadow animate-fade-in-up mt-6 break-inside-avoid">
+                                <h3 className="text-lg font-bold mb-4 text-gray-800">Comparativo Real vs Presupuesto</h3>
+                                <div className="h-80">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <BarChart data={displayMetrics}>
+                                            <CartesianGrid strokeDasharray="3 3" />
+                                            <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} fontSize={12} />
+                                            <YAxis />
+                                            <ReTooltip />
+                                            <Legend />
+                                            <Bar dataKey="actual" name="Real" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
+                                            <Bar dataKey="target" name="Meta" fill="#e2e8f0" radius={[4, 4, 0, 0]} />
+                                        </BarChart>
+                                    </ResponsiveContainer>
                                 </div>
                             </div>
-                        );
-                    })}
+                        )}
+                    </div>
+                )
+            }
 
-                    {/* CHARTS (Only if not in Daily Commitment Mode) */}
-                    {!showDailyCommitment && (
-                        <div className="bg-white p-6 rounded-lg shadow animate-fade-in-up mt-6 break-inside-avoid">
-                            <h3 className="text-lg font-bold mb-4 text-gray-800">Comparativo Real vs Presupuesto</h3>
-                            <div className="h-80">
-                                <ResponsiveContainer width="100%" height="100%">
-                                    <BarChart data={displayMetrics}>
-                                        <CartesianGrid strokeDasharray="3 3" />
-                                        <XAxis dataKey="name" angle={-45} textAnchor="end" height={80} interval={0} fontSize={12} />
-                                        <YAxis />
-                                        <ReTooltip />
-                                        <Legend />
-                                        <Bar dataKey="actual" name="Real" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
-                                        <Bar dataKey="target" name="Meta" fill="#e2e8f0" radius={[4, 4, 0, 0]} />
-                                    </BarChart>
-                                </ResponsiveContainer>
-                            </div>
-                        </div>
-                    )}
+            {/* MODALS */}
+            {
+                historyIndicator && (
+                    <IndicatorHistoryModal
+                        indicator={historyIndicator}
+                        year={selectedYear}
+                        week={selectedWeek}
+                        quarter={selectedQuarter}
+                        filterType={filterType}
+                        records={records}
+                        budgets={budgets}
+                        viewMode={viewMode}
+                        selectedAdvisorId={selectedAdvisorId}
+                        advisors={advisors}
+                        indicators={indicators}
+                        onClose={() => setHistoryIndicator(null)}
+                    />
+                )
+            }
+
+            {
+                showRanking && (
+                    <RankingModal
+                        onClose={() => setShowRanking(false)}
+                        records={records}
+                        advisors={advisors}
+                        indicators={indicators}
+                        budgets={budgets}
+                        year={selectedYear}
+                        week={selectedWeek}
+                        filterType={filterType}
+                    />
+                )
+            }
+
+            {
+                showMute && (
+                    <MuteAdvisorsModal onClose={() => setShowMute(false)} records={records} advisors={advisors} indicators={indicators} year={selectedYear} week={selectedWeek} />
+                )
+            }
+            {/* DEBUG PANEL - REMOVE AFTER FIX */}
+            {viewMode === 'BRANCH' && (
+                <div className="fixed bottom-4 left-4 bg-black/80 text-white p-4 rounded text-xs z-50 max-w-lg font-mono">
+                    <h3 className="font-bold border-b mb-2">DEBUG: Branch Aggregation Filter</h3>
+                    <div>Total Records (Raw): {dashboardRecords.length}</div>
+                    <div>
+                        Filtered for Aggregation: {
+                            dashboardRecords.filter(r => (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !r.advisorId).length
+                        }
+                    </div>
+                    <div className="mt-2 text-yellow-300">
+                        <strong>Rejected (Individual):</strong> {
+                            dashboardRecords.filter(r => r.type === 'Individual' || r.type === ReportType.INDIVIDUAL).length
+                        }
+                    </div>
+                    <div className="mt-2 text-red-300">
+                        <strong>Oddities (Type Sucursal + Has Advisor):</strong> {
+                            dashboardRecords.filter(r => (r.type === 'Sucursal' || r.type === ReportType.BRANCH) && !!r.advisorId).length
+                        }
+                    </div>
+                    <div className="mt-2 text-blue-300">
+                        <strong>Oddities (Type Indiv + No Advisor):</strong> {
+                            dashboardRecords.filter(r => (r.type === 'Individual' || r.type === ReportType.INDIVIDUAL) && !r.advisorId).length
+                        }
+                    </div>
                 </div>
-            )
-        }
-
-        {/* MODALS */}
-        {
-            historyIndicator && (
-                <IndicatorHistoryModal
-                    indicator={historyIndicator}
-                    year={selectedYear}
-                    week={selectedWeek}
-                    quarter={selectedQuarter}
-                    filterType={filterType}
-                    records={records}
-                    budgets={budgets}
-                    viewMode={viewMode}
-                    selectedAdvisorId={selectedAdvisorId}
-                    advisors={advisors}
-                    indicators={indicators}
-                    onClose={() => setHistoryIndicator(null)}
-                />
-            )
-        }
-
-        {
-            showRanking && (
-                <RankingModal
-                    onClose={() => setShowRanking(false)}
-                    records={records}
-                    advisors={advisors}
-                    indicators={indicators}
-                    budgets={budgets}
-                    year={selectedYear}
-                    week={selectedWeek}
-                    filterType={filterType}
-                />
-            )
-        }
-
-        {
-            showMute && (
-                <MuteAdvisorsModal onClose={() => setShowMute(false)} records={records} advisors={advisors} indicators={indicators} year={selectedYear} week={selectedWeek} />
-            )
-        }
-    </div >
-);
+            )}
+        </div >
+    );
 };
 
 // ... Helper Modals (IndicatorHistoryModal, RankingModal, MuteAdvisorsModal) ...
