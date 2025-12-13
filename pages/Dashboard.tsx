@@ -116,19 +116,18 @@ export const Dashboard = () => {
         } else if (fType === 'DAY') {
             const weekBudgets = relevantBudgets.filter(b => b.year === year && b.week === week);
 
-            // PRIORITY FIX: Check Weekly Config FIRST.
-            // If a Weekly Config exists, use the Average (or Weekly/7) as the Truth.
-            // This ignores "polluted" Daily records (e.g. inflated 8 on Sunday) that exist in the DB.
-            const weeklyConfig = weekBudgets.find(b => b.periodType === 'WEEKLY');
+            // PRIORIDAD FIX: Primero buscar configuración DIARIA ESPECÍFICA.
+            // Si existe un valor explícito para este día, usarlo.
+            const dailyConfig = weekBudgets.find(b => b.periodType === 'DAILY' && b.dayOfWeek === dayIndex);
 
-            if (weeklyConfig) {
-                if (isAverage) totalTarget = weeklyConfig.amount;
-                else totalTarget = weeklyConfig.amount / 7;
+            if (dailyConfig) {
+                totalTarget = dailyConfig.amount;
             } else {
-                // Only fall back to specific Daily config if NO Weekly config exists
-                const dailyConfig = weekBudgets.find(b => b.periodType === 'DAILY' && b.dayOfWeek === dayIndex);
-                if (dailyConfig) {
-                    totalTarget = dailyConfig.amount;
+                // Si no hay diario, buscar semanal y dividir/promediar
+                const weeklyConfig = weekBudgets.find(b => b.periodType === 'WEEKLY');
+                if (weeklyConfig) {
+                    if (isAverage) totalTarget = weeklyConfig.amount;
+                    else totalTarget = weeklyConfig.amount / 7;
                 }
             }
         } else if (fType === 'TRIMESTER') {
@@ -1018,14 +1017,14 @@ const IndicatorHistoryModal = ({ indicator, year, week, quarter, filterType, rec
             const dailyTargetFallback = isAverage ? weeklyTargetTotal : (weeklyTargetTotal > 0 ? weeklyTargetTotal / 7 : 0);
 
             rows = days.map(day => {
-                // If we have a Weekly Config, use the fallback (Average) exclusively to ensure Total matches Weekly Goal.
-                // Otherwise (if no Weekly Config), look for Daily overrides.
+                // Correct Priority: Specific Daily > Weekly Fallback
                 let target = 0;
-                if (weeklyConfig) {
+                const specificAmount = dailyBudgetMap.get(day.id);
+
+                if (specificAmount !== undefined) {
+                    target = specificAmount;
+                } else if (weeklyConfig) {
                     target = dailyTargetFallback;
-                } else {
-                    const specificAmount = dailyBudgetMap.get(day.id);
-                    target = specificAmount !== undefined ? specificAmount : 0;
                 }
 
                 const dailyR = currentRecords.find((r: RecordData) => r.frequency === 'DAILY' && r.dayOfWeek === day.id);

@@ -151,8 +151,15 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
                     const res = await authenticatedFetch(endpoint, 'GET', undefined, headers);
                     const json = await res.json();
                     return mapKeysToApp(json) || [];
-                } catch (e) {
+                } catch (e: any) {
                     console.warn(`[FetchData] Error fetching ${endpoint}`, e);
+
+                    // CRITICAL PROTECTION: If Auth error (401) or JWT issue, THROW to stop fetchData 
+                    // from wiping state with [] (empty arrays).
+                    if (e.message && (e.message.includes('401') || e.message.includes('JWT') || e.message.includes('expired'))) {
+                        throw e;
+                    }
+
                     return [];
                 }
             };
@@ -524,7 +531,23 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
     };
 
     // Advisors
-    const addAdvisor = async (adv: Advisor) => genericAdd('advisors', adv, 'Asesor');
+    const addAdvisor = async (adv: Advisor) => {
+        const dbItem = mapKeysToDB(adv);
+        delete dbItem.id; // DB gen
+
+        // Request return=representation
+        const res = await authenticatedFetch('advisors', 'POST', dbItem, {
+            'Prefer': 'return=representation'
+        });
+
+        const data = await res.json();
+        if (data && data.length > 0) {
+            const newAdv = mapKeysToApp(data[0]);
+            setAdvisors(prev => [...prev, newAdv]);
+            addAuditLog('Agregar Asesor', `ID: ${newAdv.id}`);
+        }
+        // NO fetchData()
+    };
     const updateAdvisor = async (adv: Advisor) => genericUpdate('advisors', adv, 'Asesor');
     const deleteAdvisor = async (id: string) => genericDelete('advisors', id, 'Asesor');
 
