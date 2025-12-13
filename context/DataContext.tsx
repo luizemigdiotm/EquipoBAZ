@@ -141,7 +141,14 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
             // Helper to safe fetch and map
             const safeFetch = async (endpoint: string) => {
                 try {
-                    const res = await authenticatedFetch(endpoint, 'GET');
+                    // CRITICAL FIX: Supabase defaults to 1000 items. We force a larger range
+                    // to ensure we get all budgets/records.
+                    // Ideally we should implement true pagination, but 10k covers current needs.
+                    const headers = {
+                        'Range-Unit': 'items',
+                        'Range': '0-9999'
+                    };
+                    const res = await authenticatedFetch(endpoint, 'GET', undefined, headers);
                     const json = await res.json();
                     return mapKeysToApp(json) || [];
                 } catch (e) {
@@ -644,63 +651,88 @@ export const DataProvider = ({ children }: { children?: ReactNode }) => {
         if (cleanRec.dayOfWeek === undefined) delete (cleanRec as any).dayOfWeek;
         if (cleanRec.advisorId === undefined) delete (cleanRec as any).advisorId;
 
-        // OPTIMISTIC UPDATE: Update local state immediately so UI feels instant and data persists in context
-        // regardless of network latency.
-        const tempId = cleanRec.id || `temp-${Date.now()}`;
-        const optimisticRec = { ...cleanRec, id: tempId };
+        try {
+            // Handle Cleanup Manual (if switching types/frequencies)
+            if (cleanupMode) {
+                const params = new URLSearchParams();
+                params.append('year', `eq.${rec.year}`);
+                params.append('week', `eq.${rec.week}`);
+                params.append('type', `eq.${rec.type}`);
 
-        setRecords(prev => {
-            const index = prev.findIndex(r => r.id === tempId || (cleanRec.id && r.id === cleanRec.id));
-            if (index >= 0) {
-                const newArr = [...prev];
-                newArr[index] = optimisticRec;
-                return newArr;
-            } else {
-                // Check if we should replace a matching record by logical key (to avoid dups in UI before partial refresh)
-                // This is complex, but for QuickEntry we mostly rely on ID. 
-                // If ID is empty, it's new.
-                return [...prev, optimisticRec];
+                if (cleanupMode === 'DELETE_WEEKLY') {
+                    params.append('frequency', 'eq.WEEKLY');
+                } else {
+                    params.append('frequency', 'eq.DAILY');
+                }
+
+                if (rec.advisorId) {
+                    params.append('advisor_id', `eq.${rec.advisorId}`);
+                }
+
+                try {
+                    await authenticatedFetch(`records?${params.toString()}`, 'DELETE');
+                    // Update local state for cleanup
+                    // (Complex to filter locally precisely matching params, but the next step is usually inserting the new one)
+                } catch (e) {
+                    console.warn('Cleanup failed or nothing to delete', e);
+                }
             }
-        });
 
-        // CRITICAL FIX: If we have an ID that is not temp, use PATCH (Update), do NOT delete/insert
-        if (cleanRec.id && !cleanRec.id.startsWith('temp-')) {
+            // CRITICAL OPTIMIZATION: Use return=representation and local update
+            // instead of genericAdd/fetchData which causes full reload and data loss if >1000 items.
+
+            const isUpdate = cleanRec.id && !cleanRec.id.startsWith('temp-');
+            const method = isUpdate ? 'PATCH' : 'POST';
+            const url = isUpdate ? `records?id=eq.${cleanRec.id}` : 'records';
             const dbItem = mapKeysToDB(cleanRec);
-            await authenticatedFetch(`records?id=eq.${cleanRec.id}`, 'PATCH', dbItem);
-            addAuditLog('Editar Registro', `ID: ${cleanRec.id}`);
-            fetchData();
-            return;
+            // If insert, ensure no ID is sent if it's empty/temp, let DB generate
+            if (!isUpdate) delete dbItem.id;
+
+            const res = await authenticatedFetch(url, method, dbItem, {
+                'Prefer': 'return=representation'
+            });
+
+            const data = await res.json();
+
+            if (data && data.length > 0) {
+                const savedRecord = mapKeysToApp(data[0]);
+
+                setRecords(prev => {
+                    // If unique constraint violation or double click handled by merge-duplicates, 
+                    // we might want to filter out old temp IDs first.
+                    // For now, simple replace or add:
+                    const withoutTemp = prev.filter(r => r.id !== cleanRec.id); // Remove optimistic/temp or old version
+
+                    // Also check for ID match in case it wasn't the same object ref
+                    const withoutDup = withoutTemp.filter(r => r.id !== savedRecord.id);
+
+                    return [...withoutDup, savedRecord];
+                });
+            }
+
+            addAuditLog(isUpdate ? 'Editar Registro' : 'Agregar Registro', `ID: ${cleanRec.id || 'Nuevo'}`);
+            // NO fetchData(); 
+
+        } catch (e) {
+            console.error('[saveRecord] Error:', e);
+            throw e;
         }
-
-        // Handle Cleanup Manual
-        if (cleanupMode) {
-            const params = new URLSearchParams();
-            params.append('year', `eq.${rec.year}`);
-            params.append('week', `eq.${rec.week}`);
-            params.append('type', `eq.${rec.type}`);
-
-            if (cleanupMode === 'DELETE_WEEKLY') {
-                params.append('frequency', 'eq.WEEKLY');
-            } else {
-                params.append('frequency', 'eq.DAILY');
-            }
-
-            if (rec.advisorId) {
-                params.append('advisor_id', `eq.${rec.advisorId}`);
-            }
-
-            try {
-                await authenticatedFetch(`records?${params.toString()}`, 'DELETE');
-            } catch (e) {
-                console.warn('Cleanup failed or nothing to delete', e);
-            }
-        }
-
-        // Reuse Manual Add
-        await genericAdd('records', cleanRec, 'Registro');
     };
 
-    const deleteRecord = async (id: string) => genericDelete('records', id, 'Registro');
+    const deleteRecord = async (id: string) => {
+        try {
+            await authenticatedFetch(`records?id=eq.${id}`, 'DELETE');
+
+            // Local Update
+            setRecords(prev => prev.filter(r => r.id !== id));
+
+            addAuditLog('Eliminar Registro', `ID: ${id}`);
+            // NO fetchData();
+        } catch (e) {
+            console.error('[deleteRecord] Error:', e);
+            throw e;
+        }
+    };
 
     // RRHH
     const addRRHHEvent = async (evt: RRHHEvent) => genericAdd('rrhh_events', evt, 'Evento RRHH');
