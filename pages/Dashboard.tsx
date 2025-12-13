@@ -256,31 +256,64 @@ export const Dashboard = () => {
         // Auto-detect average type if unit is %
         const isAverage = indicator.isAverage || indicator.unit === '%';
 
-        if (isAverage && (filterType === 'TRIMESTER' || filterType === 'YEAR')) {
-            let sum = 0;
-            let count = 0;
-            relevantRecords.forEach(r => {
-                const val = r.values[indicator.id];
-                if (val !== undefined) {
-                    sum += val;
-                    count++;
+        // ROBUST AGGREGATION: Group by Advisor -> Deduplicate frequency -> Sum
+        // This handles:
+        // 1. Hybrid scenarios (Advisor A daily, Advisor B weekly)
+        // 2. Database duplicates (Multiple rows for same Monday) by taking the last/first one
+
+        const advisorMap = new Map<string, RecordData[]>();
+        relevantRecords.forEach(r => {
+            const k = r.advisorId;
+            if (!advisorMap.has(k)) advisorMap.set(k, []);
+            advisorMap.get(k)?.push(r);
+        });
+
+        let totalSum = 0;
+        let totalCount = 0;
+
+        advisorMap.forEach((recs) => {
+            // For THIS advisor, decide value.
+            // Deduplicate Daily: Map<day, val>
+            const dailyValues = new Map<number, number>();
+            // Deduplicate Weekly: Just take one
+            let weeklyVal = 0;
+            let hasWeekly = false;
+
+            recs.forEach(r => {
+                const val = r.values[indicator.id] || 0;
+                if (r.frequency === 'DAILY') {
+                    // If multiple records for same day, OVERWRITE (assume last is correct/latest)
+                    // or use logic to find max/latest. For now, Map.set overwrites, handling duplicates.
+                    if (r.dayOfWeek !== undefined) dailyValues.set(r.dayOfWeek, val);
+                } else {
+                    weeklyVal = val;
+                    hasWeekly = true;
                 }
             });
-            return Math.ceil(count > 0 ? sum / count : 0);
-        } else {
-            // FIX: Deduplicate logic. Prioritize Daily records if present, else fall back to Weekly.
-            // Do NOT sum both, as that causes double counting (e.g. 534 daily sum + 130 weekly ghost = 664).
-            const dailies = relevantRecords.filter(r => r.frequency === 'DAILY');
-            const weeklies = relevantRecords.filter(r => r.frequency === 'WEEKLY');
 
-            if (dailies.length > 0) {
-                const sumDaily = dailies.reduce((sum, r) => sum + (r.values[indicator.id] || 0), 0);
-                return Math.ceil(sumDaily);
-            } else if (weeklies.length > 0) {
-                const sumWeekly = weeklies.reduce((sum, r) => sum + (r.values[indicator.id] || 0), 0);
-                return Math.ceil(sumWeekly);
+            let advisorVal = 0;
+            if (dailyValues.size > 0) {
+                // If has dailies, use sum of dailies (Ignore weekly "ghost")
+                advisorVal = Array.from(dailyValues.values()).reduce((a, b) => a + b, 0);
+            } else if (hasWeekly) {
+                // Fallback to weekly
+                advisorVal = weeklyVal;
             }
-            return 0;
+
+            if (indicator.isAverage || indicator.unit === '%') {
+                // For averages, we might need different logic (e.g. sum of percentages? or avg of percentages?)
+                // Usually avg of percentages = sum / count
+                totalSum += advisorVal;
+                totalCount++;
+            } else {
+                totalSum += advisorVal;
+            }
+        });
+
+        if (indicator.isAverage || indicator.unit === '%') {
+            return Math.ceil(totalCount > 0 ? totalSum / totalCount : 0);
+        } else {
+            return Math.ceil(totalSum);
         }
     };
 
